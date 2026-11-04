@@ -27,7 +27,9 @@ def connect() -> sqlite3.Connection:
 
 def target(base: Target | None = None) -> Target:
     """`base` (mapping, timestamp settings) pointed at the runner's events table."""
-    return replace(base or Target(), dialect="sqlite", table=TABLE, json_column=COLUMN)
+    base = base or Target()
+    routes = tuple(replace(r, table=None) for r in base.routes)
+    return replace(base, dialect="sqlite", table=TABLE, json_column=COLUMN, routes=routes)
 
 
 def load(events: list[dict[str, Any]]) -> sqlite3.Connection:

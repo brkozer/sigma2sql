@@ -10,7 +10,7 @@ COUNT(DISTINCT ...), which window functions do not.
 from __future__ import annotations
 
 from sigma2sql.rule import OPS, Correlation, Rule
-from sigma2sql.sql import Renderer, Target, literal, quote_ident, quote_table
+from sigma2sql.sql import Renderer, Target, literal, quote_ident, source
 
 
 def correlation_query(corr: Correlation, rules: list[Rule], target: Target) -> str:
@@ -25,8 +25,8 @@ def correlation_query(corr: Correlation, rules: list[Rule], target: Target) -> s
             cols.append(f"{r.column(sigma_field)} AS {alias}")
         if corr.field:
             cols.append(f"{r.column(corr.field)} AS sigma_value")
-        where = r.render(rule.compile())
-        branches.append(f"SELECT {', '.join(cols)} FROM {quote_table(target.table)} WHERE {where}")
+        table, where = source(rule, target)
+        branches.append(f"SELECT {', '.join(cols)} FROM {table} WHERE {where}")
     base = "\n  UNION ALL\n  ".join(branches)
 
     def aggregate(b: str) -> str:

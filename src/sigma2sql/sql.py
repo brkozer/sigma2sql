@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Any, Literal
 
+from sigma2sql.detection import compile_search
 from sigma2sql.errors import UnsupportedRule
 from sigma2sql.expr import (
     And,
@@ -41,11 +42,29 @@ RE2_UNSUPPORTED = re.compile(r"\(\?<?[=!]|\\[1-9]")
 
 
 @dataclass(frozen=True)
+class Route:
+    """Logsource routing: rules whose `logsource` has every key/value in `match` read
+    from `table` (if set) and get `where` (a Sigma search map, in target field names) added.
+    """
+
+    match: Mapping[str, str]
+    table: str | None = None
+    where: Mapping[str, Any] | None = None
+
+    def applies(self, logsource: Mapping[str, str]) -> bool:
+        return all(
+            str(logsource.get(k, "")).lower() == str(v).lower() for k, v in self.match.items()
+        )
+
+
+@dataclass(frozen=True)
 class Target:
     """Where the events live and how Sigma field names reach them.
 
     With `json_column`, every event is one JSON object in that column and fields are
-    read as top-level keys. Otherwise each field is its own column.
+    read as top-level keys (or, with `nested`, dotted paths into nested objects).
+    Otherwise each field is its own column. A field missing from `mapping` is looked up
+    as `default_field` with `{field}` replaced, or under its own name.
     """
 
     dialect: Dialect = "sqlite"
@@ -56,6 +75,9 @@ class Target:
     # Event time, used by correlations and aggregations with a timespan.
     timestamp: str = "timestamp"
     timestamp_format: TimestampFormat = "iso"
+    nested: bool = False
+    default_field: str | None = None
+    routes: tuple[Route, ...] = ()
 
 
 def to_query(rule: Rule, target: Target, columns: str = "*") -> str:
@@ -65,8 +87,22 @@ def to_query(rule: Rule, target: Target, columns: str = "*") -> str:
         from sigma2sql.correlation import correlation_query
 
         return correlation_query(rule.aggregation, [replace(rule, aggregation=None)], target)
+    table, where = source(rule, target)
+    return f"SELECT {columns} FROM {table} WHERE {where}"
+
+
+def source(rule: Rule, target: Target) -> tuple[str, str]:
+    """The quoted table and WHERE clause for a rule, after logsource routing."""
     where = to_where(rule.compile(), target)
-    return f"SELECT {columns} FROM {quote_table(target.table)} WHERE {where}"
+    route = next((r for r in target.routes if r.applies(rule.logsource)), None)
+    if route is None:
+        return quote_table(target.table), where
+    if route.where:
+        # Route conditions are written in target field names, so no mapping applies.
+        raw = replace(target, mapping={}, default_field=None)
+        extra = to_where(compile_search("logsource", dict(route.where)), raw)
+        where = f"({extra} AND {where})"
+    return quote_table(route.table or target.table), where
 
 
 def to_where(expr: Expr, target: Target) -> str:
@@ -129,13 +165,19 @@ class Renderer:
         raise AssertionError(f"unhandled expression {expr!r}")
 
     def column(self, sigma_field: str) -> str:
-        name = self.t.mapping.get(sigma_field, sigma_field)
+        name = self.t.mapping.get(sigma_field)
+        if name is None:
+            template = self.t.default_field
+            name = template.replace("{field}", sigma_field) if template else sigma_field
         if self.t.json_column is None:
             return quote_ident(name)
         col = quote_ident(self.t.json_column)
+        parts = [_dq(p) for p in (name.split(".") if self.t.nested else [name])]
         if self.d == "postgres":
-            return f"{col}->>{literal(name)}"
-        path = literal('$."' + name.replace("\\", "\\\\").replace('"', '\\"') + '"')
+            if len(parts) == 1:
+                return f"{col}->>{literal(name)}"
+            return f"{col}#>>{literal('{' + ','.join(parts) + '}')}"
+        path = literal("$" + "".join("." + p for p in parts))
         if self.d == "duckdb":
             return f"{col}->>{path}"
         return f"json_extract({col}, {path})"
@@ -219,6 +261,11 @@ class Renderer:
     def same(self, a: str, b: str) -> str:
         """Null-safe equality."""
         return f"{a} IS {b}" if self.d == "sqlite" else f"{a} IS NOT DISTINCT FROM {b}"
+
+
+def _dq(key: str) -> str:
+    """A double-quoted JSON path key or PostgreSQL array element."""
+    return '"' + key.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _join(parts: list[str], op: str) -> str:

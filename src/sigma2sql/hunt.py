@@ -75,7 +75,10 @@ def hunt(
     """
     con = connect()
     events = load_logs(con, paths)
-    target = replace(base or Target(), dialect="duckdb", table=TABLE, json_column=COLUMN)
+    base = base or Target()
+    # All logs share one table here, so profile routes keep only their conditions.
+    routes = tuple(replace(r, table=None) for r in base.routes)
+    target = replace(base, dialect="duckdb", table=TABLE, json_column=COLUMN, routes=routes)
     items: list[Document] = [*rules.standalone(), *rules.correlations]
     hits: list[Hit] = []
     skipped: list[tuple[Document, str]] = []

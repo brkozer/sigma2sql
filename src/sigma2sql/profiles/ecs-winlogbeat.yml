@@ -1,0 +1,43 @@
+description: Windows events shipped by Winlogbeat in Elastic Common Schema (nested JSON); unmapped fields fall back to winlog.event_data
+nested: true
+timestamp: "@timestamp"
+default_field: "winlog.event_data.{field}"
+fields:
+  EventID: event.code
+  Channel: winlog.channel
+  Provider_Name: winlog.provider_name
+  Computer: host.name
+  Image: process.executable
+  CommandLine: process.command_line
+  ProcessId: process.pid
+  CurrentDirectory: process.working_directory
+  OriginalFileName: process.pe.original_file_name
+  Product: process.pe.product
+  Company: process.pe.company
+  Description: process.pe.description
+  ParentImage: process.parent.executable
+  ParentCommandLine: process.parent.command_line
+  ParentProcessId: process.parent.pid
+  User: user.name
+  TargetFilename: file.path
+  ImageLoaded: file.path
+  DestinationIp: destination.ip
+  DestinationPort: destination.port
+  DestinationHostname: destination.domain
+  SourceIp: source.ip
+  SourcePort: source.port
+  QueryName: dns.question.name
+  TargetObject: registry.path
+logsources:
+  # Sysmon via the Winlogbeat sysmon module: event.code holds the event ID as a string.
+  - {match: {product: windows, category: process_creation}, where: {winlog.channel: Microsoft-Windows-Sysmon/Operational, event.code: "1"}}
+  - {match: {product: windows, category: network_connection}, where: {winlog.channel: Microsoft-Windows-Sysmon/Operational, event.code: "3"}}
+  - {match: {product: windows, category: image_load}, where: {winlog.channel: Microsoft-Windows-Sysmon/Operational, event.code: "7"}}
+  - {match: {product: windows, category: process_access}, where: {winlog.channel: Microsoft-Windows-Sysmon/Operational, event.code: "10"}}
+  - {match: {product: windows, category: file_event}, where: {winlog.channel: Microsoft-Windows-Sysmon/Operational, event.code: "11"}}
+  - {match: {product: windows, category: registry_set}, where: {winlog.channel: Microsoft-Windows-Sysmon/Operational, event.code: "13"}}
+  - {match: {product: windows, category: registry_event}, where: {winlog.channel: Microsoft-Windows-Sysmon/Operational, event.code: ["12", "13", "14"]}}
+  - {match: {product: windows, category: dns_query}, where: {winlog.channel: Microsoft-Windows-Sysmon/Operational, event.code: "22"}}
+  - {match: {product: windows, service: security}, where: {winlog.channel: Security}}
+  - {match: {product: windows, service: system}, where: {winlog.channel: System}}
+  - {match: {product: windows, service: powershell}, where: {winlog.channel: Microsoft-Windows-PowerShell/Operational}}

@@ -1,0 +1,26 @@
+description: Sysmon events with their original field names; each Sigma category is limited to its Sysmon event ID
+timestamp: UtcTime
+logsources:
+  - {match: {product: windows, category: process_creation}, where: {EventID: 1}}
+  - {match: {product: windows, category: file_change}, where: {EventID: 2}}
+  - {match: {product: windows, category: network_connection}, where: {EventID: 3}}
+  - {match: {product: windows, category: process_termination}, where: {EventID: 5}}
+  - {match: {product: windows, category: driver_load}, where: {EventID: 6}}
+  - {match: {product: windows, category: image_load}, where: {EventID: 7}}
+  - {match: {product: windows, category: create_remote_thread}, where: {EventID: 8}}
+  - {match: {product: windows, category: raw_access_thread}, where: {EventID: 9}}
+  - {match: {product: windows, category: process_access}, where: {EventID: 10}}
+  - {match: {product: windows, category: file_event}, where: {EventID: 11}}
+  - {match: {product: windows, category: registry_add}, where: {EventID: 12}}
+  - {match: {product: windows, category: registry_delete}, where: {EventID: 12}}
+  - {match: {product: windows, category: registry_set}, where: {EventID: 13}}
+  - {match: {product: windows, category: registry_rename}, where: {EventID: 14}}
+  - {match: {product: windows, category: registry_event}, where: {EventID: [12, 13, 14]}}
+  - {match: {product: windows, category: create_stream_hash}, where: {EventID: 15}}
+  - {match: {product: windows, category: pipe_created}, where: {EventID: [17, 18]}}
+  - {match: {product: windows, category: wmi_event}, where: {EventID: [19, 20, 21]}}
+  - {match: {product: windows, category: dns_query}, where: {EventID: 22}}
+  - {match: {product: windows, category: file_delete}, where: {EventID: [23, 26]}}
+  - {match: {product: windows, category: clipboard_capture}, where: {EventID: 24}}
+  - {match: {product: windows, category: process_tampering}, where: {EventID: 25}}
+  - {match: {product: windows, category: file_executable_detected}, where: {EventID: 29}}

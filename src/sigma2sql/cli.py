@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from sigma2sql.collection import Collection
 from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.hunt import LEVELS, Hit, Report, hunt
+from sigma2sql.profile import apply_profile, builtin_profiles, load_profile
 from sigma2sql.rule import Correlation, Document
 from sigma2sql.runner import matching_events, read_jsonl, rows
 from sigma2sql.runner import target as runner_target
@@ -55,23 +57,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     _field_options(hunt_p)
 
+    sub.add_parser("profiles", help="list the built-in profiles")
+
     args = parser.parse_args(argv)
     # Rules contain non-ASCII (e.g. windash variants); don't depend on the console code page.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
+    if args.command == "profiles":
+        for name, description in builtin_profiles().items():
+            print(f"{name:<16}{description}")
+        return 0
     try:
-        target = Target(
-            dialect=getattr(args, "dialect", "sqlite"),
-            table=getattr(args, "table", "events"),
-            mapping=_load_mapping(args.mapping),
-            json_column=getattr(args, "json_column", None),
-            keyword_column=getattr(args, "keyword_column", None),
-            timestamp=args.timestamp_field,
-            timestamp_format=args.timestamp_format,
-        )
+        target = _target(args)
     except (OSError, ValueError, yaml.YAMLError) as exc:
-        print(f"sigma2sql: mapping: {exc}", file=sys.stderr)
+        print(f"sigma2sql: {exc}", file=sys.stderr)
         return 2
     if args.command == "convert":
         return _convert(args.paths, target)
@@ -81,11 +81,37 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _field_options(p: argparse.ArgumentParser) -> None:
-    p.add_argument("-m", "--mapping", type=Path, help="YAML map of Sigma field -> column/key")
     p.add_argument(
-        "--timestamp-field", default="timestamp", help="event time field for correlations"
+        "-p", "--profile", help="built-in profile name (see `sigma2sql profiles`) or YAML file"
     )
-    p.add_argument("--timestamp-format", choices=("iso", "epoch_s", "epoch_ms"), default="iso")
+    p.add_argument("-m", "--mapping", type=Path, help="YAML map of Sigma field -> column/key")
+    p.add_argument("--nested", action="store_true", help="dotted names are nested JSON paths")
+    p.add_argument("--timestamp-field", help="event time field for correlations")
+    p.add_argument("--timestamp-format", choices=("iso", "epoch_s", "epoch_ms"))
+
+
+def _target(args: argparse.Namespace) -> Target:
+    """Defaults, then the profile, then explicit command-line options."""
+    try:
+        mapping = _load_mapping(args.mapping)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise ValueError(f"mapping: {exc}") from exc
+    target = Target(
+        dialect=getattr(args, "dialect", "sqlite"),
+        table=getattr(args, "table", "events"),
+        mapping=mapping,
+        json_column=getattr(args, "json_column", None),
+        keyword_column=getattr(args, "keyword_column", None),
+    )
+    if args.profile:
+        target = apply_profile(target, load_profile(args.profile))
+    if args.nested:
+        target = replace(target, nested=True)
+    if args.timestamp_field:
+        target = replace(target, timestamp=args.timestamp_field)
+    if args.timestamp_format:
+        target = replace(target, timestamp_format=args.timestamp_format)
+    return target
 
 
 def _report_errors(col: Collection) -> None:

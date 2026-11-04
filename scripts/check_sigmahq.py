@@ -1,6 +1,6 @@
 """Convert every rule in a SigmaHQ checkout and execute the SQL on SQLite, DuckDB and PostgreSQL.
 
-    uv run python scripts/check_sigmahq.py path/to/sigma/rules [postgres-dsn]
+    uv run python scripts/check_sigmahq.py path/to/sigma/rules [--dsn DSN] [--profile NAME]
 
 Prints how many rules convert per dialect and fails if any generated query is rejected
 by the database. Without a DSN PostgreSQL is skipped.
@@ -8,17 +8,24 @@ by the database. Without a DSN PostgreSQL is skipped.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from sigma2sql import RuleError, Target, UnsupportedRule, load_rule_file, to_query
 from sigma2sql.hunt import connect as duckdb_connect
+from sigma2sql.profile import apply_profile, load_profile
 from sigma2sql.runner import connect as sqlite_connect
 
 
-def main(rules_dir: str, dsn: str | None) -> int:
+def main(rules_dir: str, dsn: str | None, profile: str | None) -> int:
+    base = Target(json_column="data")
+    if profile:
+        base = apply_profile(base, load_profile(profile))
+        base = replace(base, routes=tuple(replace(r, table=None) for r in base.routes))
     files = sorted(Path(rules_dir).rglob("*.yml"))
     lite = sqlite_connect()
     lite.execute("CREATE TABLE events (data TEXT)")
@@ -43,7 +50,7 @@ def main(rules_dir: str, dsn: str | None) -> int:
             continue
         for dialect, run in engines.items():
             try:
-                query = to_query(rule, Target(dialect, json_column="data"))  # type: ignore[arg-type]
+                query = to_query(rule, replace(base, dialect=dialect))  # type: ignore[arg-type]
             except (RuleError, UnsupportedRule):
                 continue
             converted[dialect] += 1
@@ -61,6 +68,9 @@ def main(rules_dir: str, dsn: str | None) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3):
-        sys.exit(__doc__)
-    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else None))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("rules")
+    parser.add_argument("--dsn", help="PostgreSQL connection string")
+    parser.add_argument("--profile", help="built-in profile name or YAML file")
+    args = parser.parse_args()
+    sys.exit(main(args.rules, args.dsn, args.profile))

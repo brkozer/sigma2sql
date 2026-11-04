@@ -1,0 +1,26 @@
+description: OCSF 1.x events (nested JSON, time in epoch milliseconds), routed by class_uid
+nested: true
+timestamp: time
+timestamp_format: epoch_ms
+fields:
+  Image: process.file.path
+  CommandLine: process.cmd_line
+  ProcessId: process.pid
+  CurrentDirectory: process.file.parent_folder
+  ParentImage: actor.process.file.path
+  ParentCommandLine: actor.process.cmd_line
+  ParentProcessId: actor.process.pid
+  User: actor.user.name
+  Computer: device.hostname
+  TargetFilename: file.path
+  DestinationIp: dst_endpoint.ip
+  DestinationPort: dst_endpoint.port
+  DestinationHostname: dst_endpoint.hostname
+  SourceIp: src_endpoint.ip
+  SourcePort: src_endpoint.port
+  QueryName: query.hostname
+logsources:
+  - {match: {category: process_creation}, where: {class_uid: 1007, activity_id: 1}}
+  - {match: {category: file_event}, where: {class_uid: 1001}}
+  - {match: {category: network_connection}, where: {class_uid: 4001}}
+  - {match: {category: dns_query}, where: {class_uid: 4003}}

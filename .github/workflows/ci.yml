@@ -34,9 +34,10 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/SigmaHQ/sigma.git /tmp/sigma
           git -C /tmp/sigma log -1 --format="SigmaHQ %h (%cs)"
-          uv run python scripts/check_sigmahq.py /tmp/sigma/rules "$SIGMA2SQL_PG_DSN"
+          uv run python scripts/check_sigmahq.py /tmp/sigma/rules --dsn "$SIGMA2SQL_PG_DSN"
+          uv run python scripts/check_sigmahq.py /tmp/sigma/rules --dsn "$SIGMA2SQL_PG_DSN" --profile ecs-winlogbeat
       - name: Convert and execute SigmaHQ's count() rules (kept in unsupported/ and deprecated/)
         run: |
           mkdir /tmp/agg
           grep -rlE 'condition:.*\| *count' --include=*.yml /tmp/sigma/unsupported /tmp/sigma/deprecated | xargs -I{} cp {} /tmp/agg/
-          uv run python scripts/check_sigmahq.py /tmp/agg "$SIGMA2SQL_PG_DSN"
+          uv run python scripts/check_sigmahq.py /tmp/agg --dsn "$SIGMA2SQL_PG_DSN"
