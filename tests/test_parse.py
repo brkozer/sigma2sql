@@ -27,7 +27,7 @@ def test_postgres_rendering() -> None:
 
 
 def test_unused_search_is_not_compiled() -> None:
-    rule = rule_for("sel: {A: 1}\nunused: {B|base64offset: x}\ncondition: sel")
+    rule = rule_for("sel: {A: 1}\nunused: {B|expand: x}\ncondition: sel")
     assert to_where(rule.compile(), Target()) == '"A" = 1'
 
 
@@ -40,7 +40,11 @@ def test_keywords_need_somewhere_to_search() -> None:
     ("detection", "error", "message"),
     [
         ("sel: {A: 1}\ncondition: sel | max(A) > 5", UnsupportedRule, "only count"),
-        ("sel: {A|base64offset: x}\ncondition: sel", UnsupportedRule, "base64offset"),
+        ("sel: {A|base64: 'x*'}\ncondition: sel", UnsupportedRule, "wildcards"),
+        ("sel: {A|wide: x}\ncondition: sel", UnsupportedRule, "only supported together"),
+        ("sel: {A|base64|base64offset: x}\ncondition: sel", RuleError, "conflicting"),
+        ("sel: {'|cidr': x}\ncondition: sel", UnsupportedRule, "on keywords"),
+        ("sel: {A|expand: x}\ncondition: sel", UnsupportedRule, "expand"),
         ("sel: {A: 1}\ncondition: other", RuleError, "unknown search"),
         ("sel: {A: 1}\ncondition: 1 of filter_*", RuleError, "does not match"),
         ("sel: {A: 1}\ncondition: (sel", RuleError, "too early"),

@@ -5,11 +5,17 @@ Each case is (name, detection YAML, events, indexes of the events that must matc
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from sigma2sql import Rule, load_rule
 
 Case = tuple[str, str, list[dict[str, Any]], list[int]]
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
 
 PROCS = [
     {"Image": "C:\\Windows\\System32\\cmd.exe", "CommandLine": "cmd.exe /c whoami"},
@@ -164,6 +170,44 @@ CASES: list[Case] = [
         "a: {X: 1}\nb: {Y: 1}\nc: {Z: 1}\ncondition: not a and b or c",
         [{"X": 1, "Y": 1}, {"X": 0, "Y": 1}, {"Z": 1}],
         [1, 2],
+    ),
+    (
+        "base64 is case-sensitive",
+        "sel: {CommandLine|base64|contains: 'IEX'}\ncondition: sel",
+        [{"CommandLine": f"powershell -e {b64(b'IEX')}"}, {"CommandLine": "powershell -e suvy"}],
+        [0],
+    ),
+    (
+        "base64offset finds the text at any byte offset",
+        "sel: {CommandLine|base64offset|contains: 'Invoke-Expression'}\ncondition: sel",
+        [{"CommandLine": f"-enc {b64(pad * b'x' + b'Invoke-Expression;')}"} for pad in range(3)]
+        + [{"CommandLine": f"-enc {b64(b'Invoke-WebRequest')}"}],
+        [0, 1, 2],
+    ),
+    (
+        "utf16 text inside base64 (wide)",
+        "sel: {CommandLine|wide|base64offset|contains: 'DownloadString'}\ncondition: sel",
+        [
+            {"CommandLine": f"-enc {b64(pad * b'x' + 'x.DownloadString('.encode('utf-16-le'))}"}
+            for pad in range(3)
+        ]
+        + [{"CommandLine": f"-enc {b64(b'x.DownloadString(')}"}],
+        [0, 1, 2],
+    ),
+    (
+        "keyword lists with modifiers",
+        "keywords:\n  '|all': [mimikatz, sekurlsa]\ncondition: keywords",
+        [
+            {"msg": "mimikatz # sekurlsa::logonpasswords"},
+            {"msg": "mimikatz # lsadump::sam"},
+        ],
+        [0],
+    ),
+    (
+        "regex keywords",
+        "keywords:\n  '|re': 'lsadump::(sam|secrets)'\ncondition: keywords",
+        [{"msg": "mimikatz # sekurlsa::logonpasswords"}, {"msg": "mimikatz # lsadump::sam"}],
+        [1],
     ),
 ]
 

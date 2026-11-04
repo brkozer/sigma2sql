@@ -152,7 +152,8 @@ class Renderer:
             case Exists(f, exists):
                 return f"{self.column(f)} IS {'NOT ' if exists else ''}NULL"
             case Regex(f, pattern, ignore_case):
-                return self.regex(self.column(f), ("(?i)" if ignore_case else "") + pattern)
+                col = self.keyword() if f is None else self.column(f)
+                return self.regex(col, ("(?i)" if ignore_case else "") + pattern)
             case Cidr(f, network):
                 col = self.column(f)
                 if self.d == "postgres":

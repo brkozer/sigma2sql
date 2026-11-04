@@ -90,7 +90,7 @@ class Exists:
 
 @dataclass(frozen=True)
 class Regex:
-    field: str
+    field: str | None  # None means the whole event
     pattern: str
     ignore_case: bool = False
 
