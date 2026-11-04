@@ -13,7 +13,8 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 COMMANDS = [
-    "sigma2sql test examples/rules/encoded_powershell.yml examples/events.jsonl --expect match",
+    "sigma2sql hunt examples/rules --logs examples/events.jsonl",
+    "sigma2sql check examples/rules --require-tests",
     "sigma2sql convert examples/rules/office_spawns_shell.yml -d postgres --json-column data",
 ]
 

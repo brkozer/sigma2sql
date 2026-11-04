@@ -1,7 +1,7 @@
 [project]
 name = "sigma2sql"
-version = "0.1.0"
-description = "Convert Sigma detection rules to SQL and test them against sample events"
+version = "0.2.0"
+description = "Sigma rules as SQL for SQLite, PostgreSQL and DuckDB: convert, hunt through log files and test rules"
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Ahmet Burak Özer" }]

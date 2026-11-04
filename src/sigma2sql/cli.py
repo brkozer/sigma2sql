@@ -7,6 +7,7 @@ import json
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from sigma2sql.sql import DIALECTS, Target, to_query
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sigma2sql", description=__doc__)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version('sigma2sql')}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     convert = sub.add_parser("convert", help="print SQL for rules and correlations")
