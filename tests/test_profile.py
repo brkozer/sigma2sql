@@ -180,14 +180,14 @@ def test_evtx_profile_candidates(engine: Engine) -> None:
     """EventID may be a number or {"#text": n}; Defender spells NewValue as "New Value"."""
     tgt = apply_profile(Target(), load_profile("evtx"))
     events = [
-        {"Event": {"System": {"EventID": 5007}, "EventData": {"New Value": "HKLM\Exclusions\x"}}},
+        {"Event": {"System": {"EventID": 5007}, "EventData": {"New Value": "HKLM\\Excl\\x"}}},
         {
             "Event": {
                 "System": {"EventID": {"#attributes": {"Qualifiers": 0}, "#text": 5007}},
-                "EventData": {"NewValue": "HKLM\Exclusions\y"},
+                "EventData": {"NewValue": "HKLM\\Excl\\y"},
             }
         },
-        {"Event": {"System": {"EventID": 5007}, "EventData": {"OldValue": "HKLM\Exclusions\z"}}},
+        {"Event": {"System": {"EventID": 5007}, "EventData": {"OldValue": "HKLM\\Excl\\z"}}},
     ]
-    detection = "s:\n  EventID: 5007\n  NewValue|contains: '\Exclusions\'\ncondition: s"
+    detection = "s:\n  EventID: 5007\n  NewValue|contains: '\\Excl\\'\ncondition: s"
     assert engine(rule("", detection), events, tgt) == [0, 1]
