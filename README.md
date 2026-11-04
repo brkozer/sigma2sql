@@ -1,6 +1,7 @@
 # sigma2sql
 
 [![ci](https://github.com/brkozer/sigma2sql/actions/workflows/ci.yml/badge.svg)](https://github.com/brkozer/sigma2sql/actions/workflows/ci.yml)
+[![pypi](https://img.shields.io/pypi/v/sigma2sql)](https://pypi.org/project/sigma2sql/)
 ![python](https://img.shields.io/badge/python-3.12%2B-3776AB)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -25,7 +26,9 @@ already live in, and unit-test rules before they reach production.
 ## Install
 
 ```bash
-uv tool install "sigma2sql[duckdb] @ git+https://github.com/brkozer/sigma2sql"
+pip install "sigma2sql[duckdb]"
+# or as a standalone tool
+uv tool install "sigma2sql[duckdb]"
 ```
 
 The `duckdb` extra is needed for `hunt`; `convert`, `test` and `check` only need PyYAML.
