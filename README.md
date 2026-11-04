@@ -19,6 +19,8 @@ a database table (or a JSON column), you can hunt with community rules directly.
 - **Safe output:** every value is a quoted literal; `'`, `%` and `_` in rules can't change
   the query.
 
+<p align="center"><img src="docs/demo.svg" alt="sigma2sql testing a rule against sample events and converting another to PostgreSQL" width="100%"></p>
+
 ## Quick start
 
 ```bash
@@ -121,6 +123,7 @@ uv sync
 uv run pytest            # SQLite tests
 SIGMA2SQL_PG_DSN=postgresql://postgres:test@localhost/postgres uv run pytest   # + PostgreSQL
 uv run python scripts/check_sigmahq.py path/to/sigma/rules [dsn]
+uv run python scripts/demo_svg.py docs/demo.svg   # regenerate the screenshot
 ```
 
 The behaviour tests in `tests/cases.py` run unchanged against both databases, so a dialect
