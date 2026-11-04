@@ -14,13 +14,16 @@ from sigma2sql.detection import compile_search
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.expr import Expr, any_of
 
-CorrelationType = Literal["event_count", "value_count", "value_sum", "value_avg", "temporal"]
+CorrelationType = Literal[
+    "event_count", "value_count", "value_sum", "value_avg", "temporal", "temporal_ordered"
+]
 CORRELATION_TYPES: tuple[CorrelationType, ...] = (
     "event_count",
     "value_count",
     "value_sum",
     "value_avg",
     "temporal",
+    "temporal_ordered",
 )
 OPS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "="}
 LEGACY_OPS = {">": "gt", ">=": "gte", "<": "lt", "<=": "lte", "=": "eq", "==": "eq"}
@@ -202,8 +205,6 @@ def _correlation(doc: dict[str, Any], path: Path | None) -> Correlation:
     if not isinstance(spec, dict):
         raise RuleError("'correlation' must be a map")
     kind = spec.get("type")
-    if kind == "temporal_ordered":
-        raise UnsupportedRule("temporal_ordered correlations are not supported")
     if kind not in CORRELATION_TYPES:
         raise UnsupportedRule(f"correlation type {kind!r} is not supported")
 
@@ -212,6 +213,8 @@ def _correlation(doc: dict[str, Any], path: Path | None) -> Correlation:
         rules = [rules]
     if not isinstance(rules, list) or not rules:
         raise RuleError("correlation needs a list of 'rules'")
+    if kind == "temporal_ordered" and len(rules) < 2:
+        raise RuleError("a temporal_ordered correlation needs two or more rules")
 
     group_by = spec.get("group-by") or []
     if isinstance(group_by, str):
@@ -222,18 +225,26 @@ def _correlation(doc: dict[str, Any], path: Path | None) -> Correlation:
         raise RuleError("correlation 'condition' must be a map")
     value_field = raw_condition.get("field", spec.get("field"))
     condition: list[tuple[str, float]] = []
-    for op, value in raw_condition.items():
-        if op == "field":
-            continue
-        if op not in OPS or isinstance(value, bool) or not isinstance(value, int | float):
-            raise RuleError(f"invalid correlation condition {op}: {value!r}")
-        condition.append((op, float(value)))
-    if kind == "temporal" and not condition:
-        condition = [("gte", float(len(rules)))]
-    if not condition:
-        raise RuleError("correlation needs a condition")
-    if kind in ("value_count", "value_sum", "value_avg") and not value_field:
-        raise RuleError(f"{kind} correlations need a condition field")
+    if kind == "temporal_ordered":
+        # The order of the events is the condition; the spec has no count for it,
+        # and silently ignoring one would make a rule mean something else.
+        if raw_condition:
+            raise RuleError("a temporal_ordered correlation takes no condition")
+        if value_field:
+            raise RuleError("a temporal_ordered correlation counts no field")
+    else:
+        for op, value in raw_condition.items():
+            if op == "field":
+                continue
+            if op not in OPS or isinstance(value, bool) or not isinstance(value, int | float):
+                raise RuleError(f"invalid correlation condition {op}: {value!r}")
+            condition.append((op, float(value)))
+        if kind == "temporal" and not condition:
+            condition = [("gte", float(len(rules)))]
+        if not condition:
+            raise RuleError("correlation needs a condition")
+        if kind in ("value_count", "value_sum", "value_avg") and not value_field:
+            raise RuleError(f"{kind} correlations need a condition field")
 
     aliases = spec.get("aliases") or {}
     if not isinstance(aliases, dict) or not all(isinstance(v, dict) for v in aliases.values()):

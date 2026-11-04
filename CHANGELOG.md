@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `temporal_ordered` correlations: an ordered sequence (`rules: [a, b, c]`) inside a `timespan`
+  now converts and runs on all three dialects. One row per group holds the earliest complete
+  sequence, with its window and the number of steps as `value`.
+- Fix: a rule listed more than once in a correlation's `rules` produced one source of events
+  per mention, so `event_count` and `value_sum` counted every event twice.
+
 ## 0.2.0 (2026-11-05)
 
 - `hunt`: run a rule directory over JSON, JSON Lines, Parquet or CSV logs with DuckDB, no

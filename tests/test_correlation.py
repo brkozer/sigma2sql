@@ -12,7 +12,7 @@ import pytest
 from sigma2sql import Collection, Correlation, RuleError, Target, correlation_query, load_documents
 from sigma2sql.rule import Rule
 from sigma2sql.runner import rows, target
-from sigma2sql.sql import to_query
+from sigma2sql.sql import Dialect, to_query
 
 Runner = Callable[[str, list[dict[str, Any]], str], list[dict[str, Any]]]
 
@@ -27,6 +27,29 @@ name: failed_logon
 detection:
   sel: {EventID: 4625}
   condition: sel
+"""
+
+RECON = r"""
+title: whoami
+name: whoami
+detection:
+  sel: {Image|endswith: '\whoami.exe'}
+  condition: sel
+---
+title: net user
+name: net_user
+detection:
+  sel: {CommandLine|contains: 'net user'}
+  condition: sel
+---
+title: Recon sequence
+correlation:
+  type: temporal_ordered
+  rules: [whoami, net_user]
+  group-by: [host]
+  timespan: 1m
+  aliases:
+    host: {whoami: Computer, net_user: Hostname}
 """
 
 CASES: list[tuple[str, str, list[dict[str, Any]], list[tuple[Any, ...]]]] = [
@@ -165,6 +188,99 @@ detection:
         ],
         [("h1", 2)],
     ),
+    (
+        "temporal_ordered needs the rules in order, with aliases",
+        RECON,
+        [
+            # pc1: whoami then net user, in order and inside the window.
+            {"Image": "C:\\Windows\\whoami.exe", "Computer": "pc1", "timestamp": t(0)},
+            {"CommandLine": "net user /domain", "Hostname": "pc1", "timestamp": t(0, 30)},
+            # pc2: the same two events the other way round.
+            {"CommandLine": "net user", "Hostname": "pc2", "timestamp": t(0)},
+            {"Image": "C:\\Windows\\whoami.exe", "Computer": "pc2", "timestamp": t(0, 30)},
+            # pc3: in order, but five minutes apart.
+            {"Image": "C:\\Windows\\whoami.exe", "Computer": "pc3", "timestamp": t(0)},
+            {"CommandLine": "net user", "Hostname": "pc3", "timestamp": t(5)},
+            # pc4: only the first half of the sequence.
+            {"Image": "C:\\Windows\\whoami.exe", "Computer": "pc4", "timestamp": t(0)},
+        ],
+        [("pc1", 2)],
+    ),
+    (
+        "temporal_ordered with three steps, no groups, no timespan",
+        """
+title: download
+name: download
+detection:
+  sel: {Action: download}
+  condition: sel
+---
+title: execute
+name: execute
+detection:
+  sel: {Action: execute}
+  condition: sel
+---
+title: connect
+name: connect
+detection:
+  sel: {Action: connect}
+  condition: sel
+---
+title: Download and run
+correlation:
+  type: temporal_ordered
+  rules: [download, execute, connect]
+""",
+        [
+            {"Action": "download", "timestamp": t(0)},
+            {"Action": "execute", "timestamp": t(1)},
+            {"Action": "connect", "timestamp": t(2)},
+        ],
+        [(3,)],
+    ),
+    (
+        "temporal_ordered ignores events that only fit one step once",
+        """
+title: both
+name: both
+detection:
+  sel: {Action|contains: 'login'}
+  condition: sel
+---
+title: Twice in a row
+correlation:
+  type: temporal_ordered
+  rules: [both, both]
+""",
+        # One event cannot be both steps, and equal timestamps are not ordered.
+        [{"Action": "login", "timestamp": t(0)}],
+        [],
+    ),
+    (
+        "a rule listed twice is one source of events",
+        """
+title: failed
+name: failed
+detection:
+  sel: {EventID: 4625}
+  condition: sel
+---
+title: Repeated failures
+correlation:
+  type: event_count
+  rules: [failed, failed]
+  timespan: 5m
+  condition: {gte: 2}
+""",
+        [
+            {"EventID": 4625, "timestamp": t(0)},
+            {"EventID": 4625, "timestamp": t(0, 30)},
+            {"EventID": 4624, "timestamp": t(1)},
+        ],
+        # Two matching events, not four: the duplicate entry must not duplicate the events.
+        [(2,)],
+    ),
 ]
 
 
@@ -263,7 +379,7 @@ def test_referenced_rules_are_not_standalone() -> None:
 @pytest.mark.parametrize(
     ("spec", "message"),
     [
-        ("type: temporal_ordered\n  rules: [a]", "temporal_ordered"),
+        ("type: temporal_ordered\n  rules: [a]", "needs two or more"),
         ("type: value_count\n  rules: [a]\n  condition: {gte: 2}", "condition field"),
         ("type: event_count\n  rules: [a]\n  timespan: 5x\n  condition: {gte: 2}", "timespan"),
         ("type: event_count\n  rules: [a]\n  condition: {gte: two}", "condition"),
@@ -279,3 +395,53 @@ def test_bad_correlations(spec: str, message: str) -> None:
         corr = next(d for d in docs if isinstance(d, Correlation))
         Collection(rules=[d for d in docs if isinstance(d, Rule)]).resolve(corr)
     assert isinstance(info.value, RuleError | Exception)
+
+
+def _rows(dialect: Dialect, sql: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Named rows from the database `sql` was written for."""
+    if dialect == "sqlite":
+        return rows(sql, events)
+    pytest.importorskip("duckdb")
+    from sigma2sql.hunt import connect
+
+    con = connect()
+    con.executemany("INSERT INTO events VALUES (?)", [(json.dumps(e),) for e in events])
+    cur = con.execute(sql)
+    names = [d[0] for d in cur.description]
+    return [dict(zip(names, r, strict=True)) for r in cur.fetchall()]
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
+def test_ordered_reports_the_first_sequence(dialect: Dialect) -> None:
+    events = [
+        {"Image": "C:\\Windows\\whoami.exe", "Computer": "pc1", "timestamp": t(0)},
+        {"CommandLine": "net user", "Hostname": "pc1", "timestamp": t(0, 30)},
+        {"Image": "C:\\Windows\\whoami.exe", "Computer": "pc1", "timestamp": t(10)},
+        {"CommandLine": "net user", "Hostname": "pc1", "timestamp": t(10, 30)},
+    ]
+    sql, groups = _sql(RECON, Target(dialect, json_column="data"))
+    found = _rows(dialect, sql, events)
+    assert _normalise(found, groups) == [("pc1", 2)]
+    # The window of the earlier sequence, not of the later one.
+    starts = [str(row["window_start"]).removesuffix(".000") for row in found]
+    ends = [str(row["window_end"]).removesuffix(".000") for row in found]
+    assert starts == ["2026-11-01 10:00:00"]
+    assert ends == ["2026-11-01 10:00:30"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ("  condition: {gte: 2}\n", "takes no condition"),
+        ("  condition: {field: Action, gte: 2}\n", "takes no condition"),
+        ("  field: Action\n", "counts no field"),
+    ],
+)
+def test_ordered_takes_no_condition(extra: str, message: str) -> None:
+    text = (
+        "title: a\nname: a\ndetection:\n  s: {A: 1}\n  condition: s\n---\n"
+        "title: b\nname: b\ndetection:\n  s: {B: 1}\n  condition: s\n---\n"
+        "title: both\ncorrelation:\n  type: temporal_ordered\n  rules: [a, b]\n" + extra
+    )
+    with pytest.raises(RuleError, match=message):
+        load_documents(text)

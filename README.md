@@ -15,8 +15,8 @@ already live in, and unit-test rules before they reach production.
   and on those events sigma2sql agrees with pySigma on 3074 of 3076 rules; the two
   differences are IPv6 addresses pySigma's text matching misses
   ([details](docs/correctness.md)).
-- **Correlations**: event counts, distinct counts, sums and temporal sequences over a sliding
-  window, as plain SQL.
+- **Correlations**: event counts, distinct counts, sums, and ordered or unordered temporal
+  sequences over a sliding window, as plain SQL.
 - **Your schema**: profiles map Sigma fields to your columns or nested JSON (Sysmon, EVTX
   exports, Elastic/Winlogbeat ECS, OCSF built in) and limit each rule to the right log source.
 
@@ -91,8 +91,8 @@ allows distinct counts:
 ```yaml
 title: Brute force against one account
 correlation:
-  type: event_count          # also value_count, value_sum, value_avg, temporal
-  rules: [failed_logon]
+  type: event_count          # also value_count, value_sum, value_avg, temporal,
+  rules: [failed_logon]      #   temporal_ordered
   group-by: [TargetUserName]
   timespan: 5m
   condition: {gte: 3}
@@ -100,7 +100,27 @@ correlation:
 
 Each result row holds the group values, the window's start and end and the counted value.
 Rules referenced by a correlation are not reported on their own unless it sets
-`generate: true`. `temporal_ordered` is not supported yet.
+`generate: true`.
+
+`temporal_ordered` takes no condition: the order of the events is the condition. Every step
+has to be later than the one before it, and no step older than the `timespan` before the first.
+One row per group holds that group's earliest complete sequence, so `value` is the number of
+steps:
+
+```yaml
+title: Recon then account discovery on one host
+correlation:
+  type: temporal_ordered
+  rules: [whoami, net_user]
+  group-by: [Computer]
+  timespan: 2m
+```
+
+```console
+$ sigma2sql test recon.yml events.jsonl
+{"Computer": "pc1", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 10:00:45.000", "value": 2}
+Recon then account discovery on one host: 1 results
+```
 
 ## Profiles
 
@@ -184,7 +204,7 @@ produces.
 | `cidr` (IPv4 and IPv6, any notation) | `cidr_match()` ¹ | `inet <<=` | `cidr_match()` ¹ |
 | `lt`, `lte`, `gt`, `gte`, `exists`, `fieldref`, `null` | ✓ | ✓ | ✓ |
 | correlations, `count()` aggregations | ✓ | ✓ | ✓ |
-| `expand` (placeholders), `temporal_ordered`, filter rules | – | – | – |
+| `expand` (placeholders), filter rules | – | – | – |
 
 ¹ Not built into the database. `hunt`, `test` and `check` register them; when you run the SQL
 elsewhere, register `regexp(pattern, value)` and `cidr_match(value, network)` yourself
