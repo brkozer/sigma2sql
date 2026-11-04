@@ -1,8 +1,9 @@
-"""Convert Sigma rules to SQL and test them against sample events."""
+"""Convert Sigma rules to SQL, test them against sample events and hunt through log files."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -10,7 +11,8 @@ from pathlib import Path
 import yaml
 
 from sigma2sql.errors import RuleError, UnsupportedRule
-from sigma2sql.rule import load_rule_file
+from sigma2sql.hunt import LEVELS, Hit, Report, hunt
+from sigma2sql.rule import Rule, load_rule_file
 from sigma2sql.runner import matching_events, read_jsonl
 from sigma2sql.sql import DIALECTS, Target, to_query
 
@@ -35,6 +37,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--expect", choices=("match", "none"), help="exit 1 unless the rule matches / matches none"
     )
 
+    hunt_p = sub.add_parser("hunt", help="run rules over JSON, Parquet or CSV logs with DuckDB")
+    hunt_p.add_argument("rules", nargs="+", type=Path, help="rule files or directories")
+    hunt_p.add_argument(
+        "-l", "--logs", nargs="+", required=True, help="log files; globs such as 'logs/*.json'"
+    )
+    hunt_p.add_argument("-m", "--mapping", type=Path, help="YAML map of Sigma field -> event key")
+    hunt_p.add_argument("-e", "--examples", type=int, default=0, help="matching events to show")
+    hunt_p.add_argument("--format", choices=("table", "json"), default="table")
+    hunt_p.add_argument(
+        "--fail-on", choices=LEVELS, help="exit 1 if a rule at this level or above matches"
+    )
+
     args = parser.parse_args(argv)
     # Rules contain non-ASCII (e.g. windash variants); don't depend on the console code page.
     for stream in (sys.stdout, sys.stderr):
@@ -54,6 +68,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             keyword_column=args.keyword_column,
         )
         return _convert(args.paths, target)
+    if args.command == "hunt":
+        return _hunt(args, mapping)
     return _test(args.rule, args.events, mapping, args.expect)
 
 
@@ -95,6 +111,62 @@ def _test(rule_path: Path, events_path: Path, mapping: dict[str, str], expect: s
     if expect == "none" and hits:
         return 1
     return 0
+
+
+def _hunt(args: argparse.Namespace, mapping: dict[str, str]) -> int:
+    rules: list[Rule] = []
+    broken = 0
+    for path in _rule_files(args.rules):
+        try:
+            rules.append(load_rule_file(path))
+        except (RuleError, UnsupportedRule, OSError) as exc:
+            broken += 1
+            print(f"skip {path}: {exc}", file=sys.stderr)
+    try:
+        report = hunt(rules, args.logs, mapping, args.examples)
+    except Exception as exc:  # DuckDB raises its own error types for unreadable files
+        print(f"sigma2sql: {exc}", file=sys.stderr)
+        return 2
+    for rule, reason in report.skipped:
+        print(f"skip {rule.path or rule.title}: {reason}", file=sys.stderr)
+
+    if args.format == "json":
+        print(json.dumps([_hit_json(h) for h in report.hits], indent=2))
+    else:
+        _print_table(report)
+    print(
+        f"{len(report.hits)} of {report.ran} rules matched {report.events} events"
+        f" ({len(report.skipped) + broken} rules skipped)",
+        file=sys.stderr,
+    )
+    if args.fail_on:
+        limit = LEVELS.index(args.fail_on)
+        if any(h.rank <= limit for h in report.hits):
+            return 1
+    return 0
+
+
+def _print_table(report: Report) -> None:
+    if not report.hits:
+        return
+    width = max(len(str(h.count)) for h in report.hits)
+    print(f"{'LEVEL':<14}{'HITS':>{width}}  RULE")
+    for h in report.hits:
+        where = f"  ({h.rule.path})" if h.rule.path else ""
+        print(f"{h.rule.level or '-':<14}{h.count:>{width}}  {h.rule.title}{where}")
+        for event in h.examples:
+            print(f"{'':<14}{'':>{width}}    {event}")
+
+
+def _hit_json(h: Hit) -> dict[str, object]:
+    return {
+        "title": h.rule.title,
+        "id": h.rule.id,
+        "level": h.rule.level,
+        "path": str(h.rule.path) if h.rule.path else None,
+        "count": h.count,
+        "examples": [json.loads(e) for e in h.examples],
+    }
 
 
 def _rule_files(paths: list[Path]) -> Iterator[Path]:

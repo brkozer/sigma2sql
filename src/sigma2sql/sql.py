@@ -1,4 +1,4 @@
-"""Render Expr trees as SQL for SQLite and PostgreSQL."""
+"""Render Expr trees as SQL for SQLite, PostgreSQL and DuckDB."""
 
 from __future__ import annotations
 
@@ -26,14 +26,17 @@ from sigma2sql.expr import (
 )
 from sigma2sql.rule import Rule
 
-Dialect = Literal["sqlite", "postgres"]
-DIALECTS: tuple[Dialect, ...] = ("sqlite", "postgres")
+Dialect = Literal["sqlite", "postgres", "duckdb"]
+DIALECTS: tuple[Dialect, ...] = ("sqlite", "postgres", "duckdb")
 
 # SQLite parses `a OR b OR ...` into a tree as deep as the list and stops at depth 1000,
 # which rules with long hash lists exceed. Grouping keeps the depth logarithmic.
 GROUP = 50
-PG_DUPMAX = 255
+# Largest {m,n} repetition count each engine accepts (SQLite uses Python's re: no limit).
+MAX_REPEAT: dict[Dialect, int | None] = {"sqlite": None, "postgres": 255, "duckdb": 1000}
 REPEAT = re.compile(r"\{(\d+)(?:,(\d*))?\}")
+# RE2 (DuckDB) has no lookaround or backreferences.
+RE2_UNSUPPORTED = re.compile(r"\(\?<?[=!]|\\[1-9]")
 
 
 @dataclass(frozen=True)
@@ -57,7 +60,7 @@ def to_query(rule: Rule, target: Target, columns: str = "*") -> str:
 
 
 def to_where(expr: Expr, target: Target) -> str:
-    return _Renderer(target).render(expr)
+    return Renderer(target).render(expr)
 
 
 def quote_ident(name: str) -> str:
@@ -72,10 +75,11 @@ def literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-class _Renderer:
+class Renderer:
     def __init__(self, target: Target) -> None:
         self.t = target
-        self.pg = target.dialect == "postgres"
+        self.d = target.dialect
+        self.json = target.json_column is not None
 
     def render(self, expr: Expr) -> str:
         match expr:
@@ -92,54 +96,56 @@ class _Renderer:
                 return self.string(col, value, cased)
             case NumMatch(f, value):
                 col = self.column(f)
-                if self.t.json_column is None:
+                if not self.json:
                     return f"{col} = {value}"
                 # JSON may hold 4688 or "4688"; compare the text form so both match.
-                text = col if self.pg else f"CAST({col} AS TEXT)"
+                text = f"CAST({col} AS TEXT)" if self.d == "sqlite" else col
                 return f"{text} = {literal(str(value))}"
             case NullMatch(f):
                 return f"{self.column(f)} IS NULL"
             case Exists(f, exists):
                 return f"{self.column(f)} IS {'NOT ' if exists else ''}NULL"
             case Regex(f, pattern, ignore_case):
-                pattern = ("(?i)" if ignore_case else "") + pattern
-                bounds = [int(n) for m in REPEAT.finditer(pattern) for n in m.groups() if n]
-                if self.pg and any(n > PG_DUPMAX for n in bounds):
-                    raise UnsupportedRule(
-                        f"PostgreSQL regexes allow at most {PG_DUPMAX} repetitions: {pattern}"
-                    )
-                op = "~" if self.pg else "REGEXP"
-                return f"{self.column(f)} {op} {literal(pattern)}"
+                return self.regex(self.column(f), ("(?i)" if ignore_case else "") + pattern)
             case Cidr(f, network):
                 col = self.column(f)
-                if self.pg:
+                if self.d == "postgres":
                     return f"({col})::inet <<= {literal(network)}::inet"
                 return f"cidr_match({col}, {literal(network)})"
             case Compare(f, op, value):
-                col = self.column(f)
-                if self.t.json_column is not None:
-                    col = f"({col})::numeric" if self.pg else f"CAST({col} AS REAL)"
-                return f"{col} {op} {value}"
+                return f"{self.number(self.column(f))} {op} {value}"
             case FieldRef(f, other):
                 return f"{self.column(f)} = {self.column(other)}"
         raise AssertionError(f"unhandled expression {expr!r}")
 
     def column(self, sigma_field: str) -> str:
         name = self.t.mapping.get(sigma_field, sigma_field)
-        json_col = self.t.json_column
-        if json_col is None:
+        if self.t.json_column is None:
             return quote_ident(name)
-        if self.pg:
-            return f"{quote_ident(json_col)}->>{literal(name)}"
-        path = '$."' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
-        return f"json_extract({quote_ident(json_col)}, {literal(path)})"
+        col = quote_ident(self.t.json_column)
+        if self.d == "postgres":
+            return f"{col}->>{literal(name)}"
+        path = literal('$."' + name.replace("\\", "\\\\").replace('"', '\\"') + '"')
+        if self.d == "duckdb":
+            return f"{col}->>{path}"
+        return f"json_extract({col}, {path})"
+
+    def number(self, col: str) -> str:
+        """Numeric view of a column; JSON values arrive as text in PostgreSQL and DuckDB."""
+        if not self.json:
+            return col
+        if self.d == "postgres":
+            return f"({col})::numeric"
+        if self.d == "duckdb":
+            return f"TRY_CAST({col} AS DOUBLE)"
+        return f"CAST({col} AS REAL)"
 
     def keyword(self) -> str:
         if self.t.keyword_column:
             return quote_ident(self.t.keyword_column)
         if self.t.json_column:
             col = quote_ident(self.t.json_column)
-            return f"{col}::text" if self.pg else col
+            return col if self.d == "sqlite" else f"CAST({col} AS TEXT)"
         raise UnsupportedRule("keyword searches need a keyword column or a JSON column")
 
     def string(self, col: str, value: SigmaString, cased: bool) -> str:
@@ -147,13 +153,34 @@ class _Renderer:
             text = value.text
             if cased:
                 return f"{col} = {literal(text)}"
-            if self.pg:
-                return f"LOWER({col}) = {literal(text.lower())}"
-            return f"{col} = {literal(text)} COLLATE NOCASE"
-        if cased and not self.pg:
-            return f"{col} GLOB {literal(_glob(value))}"
-        op = "LIKE" if cased or not self.pg else "ILIKE"
+            if self.d == "sqlite":
+                return f"{col} = {literal(text)} COLLATE NOCASE"
+            return f"LOWER({col}) = {literal(text.lower())}"
+        if self.d == "sqlite":
+            if cased:
+                return f"{col} GLOB {literal(_glob(value))}"
+            return f"{col} LIKE {literal(_like(value))} ESCAPE '\\'"
+        op = "LIKE" if cased else "ILIKE"
         return f"{col} {op} {literal(_like(value))} ESCAPE '\\'"
+
+    def regex(self, col: str, pattern: str) -> str:
+        limit = MAX_REPEAT[self.d]
+        bounds = [int(n) for m in REPEAT.finditer(pattern) for n in m.groups() if n]
+        if limit is not None and any(n > limit for n in bounds):
+            raise UnsupportedRule(f"{self.d} regexes allow at most {limit} repetitions: {pattern}")
+        if self.d == "postgres":
+            return f"{col} ~ {literal(pattern)}"
+        if self.d == "duckdb":
+            if RE2_UNSUPPORTED.search(pattern):
+                raise UnsupportedRule(
+                    f"duckdb (RE2) has no lookaround or backreferences: {pattern}"
+                )
+            return f"regexp_matches({col}, {literal(pattern)})"
+        return f"{col} REGEXP {literal(pattern)}"
+
+    def same(self, a: str, b: str) -> str:
+        """Null-safe equality."""
+        return f"{a} IS {b}" if self.d == "sqlite" else f"{a} IS NOT DISTINCT FROM {b}"
 
 
 def _join(parts: list[str], op: str) -> str:
