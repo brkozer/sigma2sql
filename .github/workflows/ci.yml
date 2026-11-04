@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      SIGMA2SQL_PG_DSN: postgresql://postgres:test@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest -q
+      - name: Convert and execute all SigmaHQ rules
+        run: |
+          git clone --depth 1 https://github.com/SigmaHQ/sigma.git /tmp/sigma
+          git -C /tmp/sigma log -1 --format="SigmaHQ %h (%cs)"
+          uv run python scripts/check_sigmahq.py /tmp/sigma/rules "$SIGMA2SQL_PG_DSN"

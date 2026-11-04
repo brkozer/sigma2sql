@@ -1,0 +1,19 @@
+title: Successful RDP logon from a public address
+id: c2d4e6f8-0a1b-4c3d-8e5f-6a7b8c9d0e03
+status: experimental
+description: Logon type 10 (RemoteInteractive) whose source is not a private network.
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType: 10
+  private:
+    IpAddress|cidr:
+      - '10.0.0.0/8'
+      - '172.16.0.0/12'
+      - '192.168.0.0/16'
+      - '127.0.0.0/8'
+  condition: selection and not private
+level: medium

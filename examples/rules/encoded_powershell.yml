@@ -1,0 +1,21 @@
+title: PowerShell started with an encoded command
+id: 5f0c2b2e-1d55-4c1a-9a51-7d1b0e3c6a01
+status: experimental
+description: Flags powershell.exe or pwsh.exe launched with -EncodedCommand or one of its abbreviations.
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection_image:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+  selection_flag:
+    CommandLine|windash|contains:
+      - ' -enc '
+      - ' -encodedcommand '
+      - ' -ec '
+  filter_trusted_parent:
+    ParentImage|startswith: 'C:\Program Files\Microsoft Configuration Manager\'
+  condition: all of selection_* and not filter_trusted_parent
+level: high

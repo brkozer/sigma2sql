@@ -1,0 +1,8 @@
+{"EventID": 1, "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "ParentImage": "C:\\Windows\\explorer.exe", "CommandLine": "powershell.exe -NoProfile -enc SQBFAFgA"}
+{"EventID": 1, "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "ParentImage": "C:\\Program Files\\Microsoft Configuration Manager\\bin\\ccmexec.exe", "CommandLine": "powershell.exe -enc SQBFAFgA"}
+{"EventID": 1, "Image": "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "ParentImage": "C:\\Windows\\explorer.exe", "CommandLine": "pwsh.exe /ec SQBFAFgA"}
+{"EventID": 1, "Image": "C:\\Windows\\System32\\cmd.exe", "ParentImage": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE", "CommandLine": "cmd.exe /c whoami"}
+{"EventID": 1, "Image": "C:\\Windows\\System32\\notepad.exe", "ParentImage": "C:\\Windows\\explorer.exe", "CommandLine": "notepad.exe report.txt"}
+{"EventID": 4624, "LogonType": 10, "IpAddress": "203.0.113.45", "TargetUserName": "admin"}
+{"EventID": "4624", "LogonType": "10", "IpAddress": "192.168.1.20", "TargetUserName": "admin"}
+{"EventID": 4624, "LogonType": 3, "IpAddress": "198.51.100.7", "TargetUserName": "svc_backup"}

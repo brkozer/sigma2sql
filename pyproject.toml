@@ -1,0 +1,44 @@
+[project]
+name = "sigma2sql"
+version = "0.1.0"
+description = "Convert Sigma detection rules to SQL and test them against sample events"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Ahmet Burak Özer" }]
+requires-python = ">=3.12"
+dependencies = ["pyyaml>=6.0.2"]
+
+[project.scripts]
+sigma2sql = "sigma2sql.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "psycopg[binary]>=3.2.3",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+    "types-pyyaml>=6.0.12",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+files = ["src/sigma2sql", "scripts"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sigma2sql"]

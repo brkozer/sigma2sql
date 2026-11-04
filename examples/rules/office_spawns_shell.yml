@@ -1,0 +1,22 @@
+title: Office application starting a shell
+id: 8a7f3e91-2c44-4b8e-b0f6-3e5d9c1a7b02
+status: experimental
+description: Word, Excel or PowerPoint starting cmd, PowerShell or a script host.
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  parent:
+    ParentImage|endswith:
+      - '\winword.exe'
+      - '\excel.exe'
+      - '\powerpnt.exe'
+  child:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '\mshta.exe'
+  condition: parent and child
+level: high
