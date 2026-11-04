@@ -1,4 +1,4 @@
-"""Run a rule against sample events in an in-memory SQLite database."""
+"""Run rules against sample events in an in-memory SQLite database."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import ipaddress
 import json
 import re
 import sqlite3
-from collections.abc import Mapping
 from contextlib import closing
+from dataclasses import replace
 from typing import Any
 
 from sigma2sql.rule import Rule
@@ -25,19 +25,36 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def target(base: Target | None = None) -> Target:
+    """`base` (mapping, timestamp settings) pointed at the runner's events table."""
+    return replace(base or Target(), dialect="sqlite", table=TABLE, json_column=COLUMN)
+
+
+def load(events: list[dict[str, Any]]) -> sqlite3.Connection:
+    conn = connect()
+    conn.execute(f"CREATE TABLE {TABLE} ({COLUMN} TEXT NOT NULL)")
+    conn.executemany(
+        f"INSERT INTO {TABLE} (rowid, {COLUMN}) VALUES (?, ?)",
+        [(i + 1, json.dumps(e)) for i, e in enumerate(events)],
+    )
+    return conn
+
+
 def matching_events(
-    rule: Rule, events: list[dict[str, Any]], mapping: Mapping[str, str] | None = None
+    rule: Rule, events: list[dict[str, Any]], base: Target | None = None
 ) -> list[int]:
     """Return the indexes of the events the rule matches."""
-    target = Target("sqlite", TABLE, dict(mapping or {}), json_column=COLUMN)
-    query = to_query(rule, target, columns="rowid")
-    with closing(connect()) as conn:
-        conn.execute(f"CREATE TABLE {TABLE} ({COLUMN} TEXT NOT NULL)")
-        conn.executemany(
-            f"INSERT INTO {TABLE} (rowid, {COLUMN}) VALUES (?, ?)",
-            [(i + 1, json.dumps(e)) for i, e in enumerate(events)],
-        )
+    query = to_query(rule, target(base), columns="rowid")
+    with closing(load(events)) as conn:
         return [row[0] - 1 for row in conn.execute(query + " ORDER BY rowid")]
+
+
+def rows(query: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Run a query (e.g. a correlation) over the events and return named rows."""
+    with closing(load(events)) as conn:
+        cur = conn.execute(query)
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, row, strict=True)) for row in cur.fetchall()]
 
 
 def read_jsonl(text: str) -> list[dict[str, Any]]:

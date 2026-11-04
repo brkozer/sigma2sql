@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ def test_example_rules(rule: str, matches: int, capsys: pytest.CaptureFixture[st
     assert main(["test", str(EXAMPLES / "rules" / rule), str(EVENTS), "--expect", "match"]) == 0
     out = capsys.readouterr()
     assert len(out.out.splitlines()) == matches
-    assert f"{matches} of 8 events matched" in out.err
+    assert f"{matches} of 12 events matched" in out.err
 
 
 def test_expect_none_fails_when_something_matches() -> None:
@@ -36,7 +37,8 @@ def test_convert_directory(capsys: pytest.CaptureFixture[str]) -> None:
     )
     out = capsys.readouterr()
     assert out.out.count("SELECT * FROM") == 3
-    assert "converted 3/3 rules" in out.err
+    assert "converted 4/4 rules" in out.err
+    assert 'GROUP BY w."g0", w.sigma_ts' in out.out
 
 
 def test_convert_reports_unsupported_rules(
@@ -46,7 +48,7 @@ def test_convert_reports_unsupported_rules(
     rules.mkdir()
     (rules / "ok.yml").write_text("title: ok\ndetection:\n  s: {A: 1}\n  condition: s\n")
     (rules / "agg.yml").write_text(
-        "title: agg\ndetection:\n  s: {A: 1}\n  condition: s | count() > 3\n"
+        "title: agg\ndetection:\n  s: {A: 1}\n  condition: s | max(A) > 3\n"
     )
     mapping = tmp_path / "map.yml"
     mapping.write_text("A: col_a\n")
@@ -61,3 +63,12 @@ def test_bad_mapping(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
     mapping.write_text("- not a map\n")
     assert main(["convert", str(EXAMPLES / "rules"), "-m", str(mapping)]) == 2
     assert "mapping" in capsys.readouterr().err
+
+
+def test_correlation_file(capsys: pytest.CaptureFixture[str]) -> None:
+    rule = EXAMPLES / "rules" / "brute_force.yml"
+    assert main(["test", str(rule), str(EVENTS), "--expect", "match"]) == 0
+    out = capsys.readouterr()
+    row = json.loads(out.out.splitlines()[0])
+    assert row["TargetUserName"] == "admin" and row["value"] == 3
+    assert "Brute force against one account: 1 results" in out.err

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from sigma2sql.errors import UnsupportedRule
@@ -27,6 +27,7 @@ from sigma2sql.expr import (
 from sigma2sql.rule import Rule
 
 Dialect = Literal["sqlite", "postgres", "duckdb"]
+TimestampFormat = Literal["iso", "epoch_s", "epoch_ms"]
 DIALECTS: tuple[Dialect, ...] = ("sqlite", "postgres", "duckdb")
 
 # SQLite parses `a OR b OR ...` into a tree as deep as the list and stops at depth 1000,
@@ -52,9 +53,18 @@ class Target:
     mapping: Mapping[str, str] = field(default_factory=dict)
     json_column: str | None = None
     keyword_column: str | None = None
+    # Event time, used by correlations and aggregations with a timespan.
+    timestamp: str = "timestamp"
+    timestamp_format: TimestampFormat = "iso"
 
 
 def to_query(rule: Rule, target: Target, columns: str = "*") -> str:
+    """SQL for a detection rule. Rules with a legacy `| count()` aggregation return
+    one row per group (and window) that meets the threshold; `columns` is then ignored."""
+    if rule.aggregation is not None:
+        from sigma2sql.correlation import correlation_query
+
+        return correlation_query(rule.aggregation, [replace(rule, aggregation=None)], target)
     where = to_where(rule.compile(), target)
     return f"SELECT {columns} FROM {quote_table(target.table)} WHERE {where}"
 
@@ -139,6 +149,34 @@ class Renderer:
         if self.d == "duckdb":
             return f"TRY_CAST({col} AS DOUBLE)"
         return f"CAST({col} AS REAL)"
+
+    def cast_number(self, expr: str) -> str:
+        if self.d == "postgres":
+            return f"CAST({expr} AS double precision)"
+        if self.d == "duckdb":
+            return f"TRY_CAST({expr} AS DOUBLE)"
+        return f"CAST({expr} AS REAL)"
+
+    def epoch(self) -> str:
+        """Event time in seconds since 1970, from the configured timestamp field."""
+        col = self.column(self.t.timestamp)
+        fmt = self.t.timestamp_format
+        if fmt != "iso":
+            seconds = self.cast_number(col)
+            return seconds if fmt == "epoch_s" else f"({seconds} / 1000.0)"
+        if self.d == "postgres":
+            return f"EXTRACT(EPOCH FROM CAST({col} AS timestamptz))"
+        if self.d == "duckdb":
+            return f"epoch(TRY_CAST({col} AS TIMESTAMPTZ))"
+        return f"unixepoch({col}, 'subsec')"
+
+    def from_epoch(self, expr: str) -> str:
+        if self.d == "sqlite":
+            return f"datetime({expr}, 'unixepoch', 'subsec')"
+        if self.d == "postgres":
+            return f"to_timestamp({expr})"
+        # A plain (UTC) TIMESTAMP: TIMESTAMPTZ values need pytz on the Python side.
+        return f"make_timestamp(CAST(({expr}) * 1000000 AS BIGINT))"
 
     def keyword(self) -> str:
         if self.t.keyword_column:

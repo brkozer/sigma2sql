@@ -5,15 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import yaml
 
+from sigma2sql.collection import Collection
+from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.hunt import LEVELS, Hit, Report, hunt
-from sigma2sql.rule import Rule, load_rule_file
-from sigma2sql.runner import matching_events, read_jsonl
+from sigma2sql.rule import Correlation, Document
+from sigma2sql.runner import matching_events, read_jsonl, rows
+from sigma2sql.runner import target as runner_target
 from sigma2sql.sql import DIALECTS, Target, to_query
 
 
@@ -21,33 +25,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sigma2sql", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    convert = sub.add_parser("convert", help="print SQL for one or more rules")
+    convert = sub.add_parser("convert", help="print SQL for rules and correlations")
     convert.add_argument("paths", nargs="+", type=Path, help="rule files or directories")
     convert.add_argument("-d", "--dialect", choices=DIALECTS, default="sqlite")
     convert.add_argument("-t", "--table", default="events")
-    convert.add_argument("-m", "--mapping", type=Path, help="YAML map of Sigma field -> column")
     convert.add_argument("--json-column", help="read fields from this JSON column")
     convert.add_argument("--keyword-column", help="column searched by keyword rules")
+    _field_options(convert)
 
-    test = sub.add_parser("test", help="run a rule against JSON Lines events")
+    test = sub.add_parser("test", help="run a rule file against JSON Lines events")
     test.add_argument("rule", type=Path)
     test.add_argument("events", type=Path, help="one JSON object per line")
-    test.add_argument("-m", "--mapping", type=Path, help="YAML map of Sigma field -> event key")
     test.add_argument(
-        "--expect", choices=("match", "none"), help="exit 1 unless the rule matches / matches none"
+        "--expect",
+        choices=("match", "none"),
+        help="exit 1 unless every rule in the file matches / nothing matches",
     )
+    _field_options(test)
 
     hunt_p = sub.add_parser("hunt", help="run rules over JSON, Parquet or CSV logs with DuckDB")
     hunt_p.add_argument("rules", nargs="+", type=Path, help="rule files or directories")
     hunt_p.add_argument(
         "-l", "--logs", nargs="+", required=True, help="log files; globs such as 'logs/*.json'"
     )
-    hunt_p.add_argument("-m", "--mapping", type=Path, help="YAML map of Sigma field -> event key")
     hunt_p.add_argument("-e", "--examples", type=int, default=0, help="matching events to show")
     hunt_p.add_argument("--format", choices=("table", "json"), default="table")
     hunt_p.add_argument(
         "--fail-on", choices=LEVELS, help="exit 1 if a rule at this level or above matches"
     )
+    _field_options(hunt_p)
 
     args = parser.parse_args(argv)
     # Rules contain non-ASCII (e.g. windash variants); don't depend on the console code page.
@@ -55,80 +61,114 @@ def main(argv: Sequence[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     try:
-        mapping = _load_mapping(args.mapping)
+        target = Target(
+            dialect=getattr(args, "dialect", "sqlite"),
+            table=getattr(args, "table", "events"),
+            mapping=_load_mapping(args.mapping),
+            json_column=getattr(args, "json_column", None),
+            keyword_column=getattr(args, "keyword_column", None),
+            timestamp=args.timestamp_field,
+            timestamp_format=args.timestamp_format,
+        )
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"sigma2sql: mapping: {exc}", file=sys.stderr)
         return 2
     if args.command == "convert":
-        target = Target(
-            dialect=args.dialect,
-            table=args.table,
-            mapping=mapping,
-            json_column=args.json_column,
-            keyword_column=args.keyword_column,
-        )
         return _convert(args.paths, target)
     if args.command == "hunt":
-        return _hunt(args, mapping)
-    return _test(args.rule, args.events, mapping, args.expect)
+        return _hunt(args, target)
+    return _test(args.rule, args.events, target, args.expect)
+
+
+def _field_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument("-m", "--mapping", type=Path, help="YAML map of Sigma field -> column/key")
+    p.add_argument(
+        "--timestamp-field", default="timestamp", help="event time field for correlations"
+    )
+    p.add_argument("--timestamp-format", choices=("iso", "epoch_s", "epoch_ms"), default="iso")
+
+
+def _report_errors(col: Collection) -> None:
+    for path, reason in col.errors:
+        print(f"skip {path}: {reason}", file=sys.stderr)
+
+
+def _sql(item: Document, col: Collection, target: Target) -> str:
+    if isinstance(item, Correlation):
+        return correlation_query(item, col.resolve(item), target)
+    return to_query(item, target)
 
 
 def _convert(paths: list[Path], target: Target) -> int:
-    files = list(_rule_files(paths))
-    if not files:
+    col = Collection.load(paths)
+    _report_errors(col)
+    items: list[Document] = [*col.standalone(), *col.correlations]
+    if not items and not col.errors:
         print("sigma2sql: no .yml or .yaml files found", file=sys.stderr)
         return 2
     failed = 0
-    for path in files:
+    for item in items:
         try:
-            rule = load_rule_file(path)
-            query = to_query(rule, target)
-        except (RuleError, UnsupportedRule, OSError) as exc:
+            query = _sql(item, col, target)
+        except (RuleError, UnsupportedRule) as exc:
             failed += 1
-            print(f"skip {path}: {exc}", file=sys.stderr)
+            print(f"skip {item.path or item.title}: {exc}", file=sys.stderr)
             continue
-        print(f"-- {rule.title}" + (f" ({rule.id})" if rule.id else ""))
+        print(f"-- {item.title}" + (f" ({item.id})" if item.id else ""))
         print(query + ";\n")
-    if len(files) > 1:
-        print(f"converted {len(files) - failed}/{len(files)} rules", file=sys.stderr)
-    return 1 if failed else 0
+    total = len(items) + len(col.errors)
+    if total > 1:
+        print(f"converted {len(items) - failed}/{total} rules", file=sys.stderr)
+    return 1 if failed or col.errors else 0
 
 
-def _test(rule_path: Path, events_path: Path, mapping: dict[str, str], expect: str | None) -> int:
+def _test(path: Path, events_path: Path, target: Target, expect: str | None) -> int:
+    col = Collection.load([path])
+    if col.errors:
+        _report_errors(col)
+        return 2
     try:
-        rule = load_rule_file(rule_path)
         events = read_jsonl(events_path.read_text(encoding="utf-8"))
-        hits = matching_events(rule, events, mapping)
-    except (RuleError, UnsupportedRule, OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         print(f"sigma2sql: {exc}", file=sys.stderr)
         return 2
     lines = [line for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    for i in hits:
-        print(lines[i])
-    print(f"{rule.title}: {len(hits)} of {len(events)} events matched", file=sys.stderr)
-    if expect == "match" and not hits:
+    matched: list[bool] = []
+    items: list[Document] = [*col.standalone(), *col.correlations]
+    for item in items:
+        try:
+            if isinstance(item, Correlation) or item.aggregation is not None:
+                found: list[Any] = rows(_sql(item, col, runner_target(target)), events)
+                for row in found:
+                    print(json.dumps(row, default=str))
+                what = "results"
+            else:
+                found = matching_events(item, events, target)
+                for i in found:
+                    print(lines[i])
+                what = f"of {len(events)} events matched"
+        except (RuleError, UnsupportedRule) as exc:
+            print(f"sigma2sql: {item.title}: {exc}", file=sys.stderr)
+            return 2
+        print(f"{item.title}: {len(found)} {what}", file=sys.stderr)
+        matched.append(bool(found))
+    if expect == "match" and not all(matched):
         return 1
-    if expect == "none" and hits:
+    if expect == "none" and any(matched):
         return 1
     return 0
 
 
-def _hunt(args: argparse.Namespace, mapping: dict[str, str]) -> int:
-    rules: list[Rule] = []
-    broken = 0
-    for path in _rule_files(args.rules):
-        try:
-            rules.append(load_rule_file(path))
-        except (RuleError, UnsupportedRule, OSError) as exc:
-            broken += 1
-            print(f"skip {path}: {exc}", file=sys.stderr)
+def _hunt(args: argparse.Namespace, target: Target) -> int:
+    col = Collection.load(args.rules)
+    _report_errors(col)
     try:
-        report = hunt(rules, args.logs, mapping, args.examples)
+        report = hunt(col, args.logs, target, args.examples)
     except Exception as exc:  # DuckDB raises its own error types for unreadable files
         print(f"sigma2sql: {exc}", file=sys.stderr)
         return 2
-    for rule, reason in report.skipped:
-        print(f"skip {rule.path or rule.title}: {reason}", file=sys.stderr)
+    for item, reason in report.skipped:
+        print(f"skip {item.path or item.title}: {reason}", file=sys.stderr)
 
     if args.format == "json":
         print(json.dumps([_hit_json(h) for h in report.hits], indent=2))
@@ -136,7 +176,7 @@ def _hunt(args: argparse.Namespace, mapping: dict[str, str]) -> int:
         _print_table(report)
     print(
         f"{len(report.hits)} of {report.ran} rules matched {report.events} events"
-        f" ({len(report.skipped) + broken} rules skipped)",
+        f" ({len(report.skipped) + len(col.errors)} rules skipped)",
         file=sys.stderr,
     )
     if args.fail_on:
@@ -164,17 +204,10 @@ def _hit_json(h: Hit) -> dict[str, object]:
         "id": h.rule.id,
         "level": h.rule.level,
         "path": str(h.rule.path) if h.rule.path else None,
+        "correlation": isinstance(h.rule, Correlation) or h.rule.aggregation is not None,
         "count": h.count,
         "examples": [json.loads(e) for e in h.examples],
     }
-
-
-def _rule_files(paths: list[Path]) -> Iterator[Path]:
-    for path in paths:
-        if path.is_dir():
-            yield from sorted(p for p in path.rglob("*") if p.suffix in (".yml", ".yaml"))
-        else:
-            yield path
 
 
 def _load_mapping(path: Path | None) -> dict[str, str]:

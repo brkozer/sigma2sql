@@ -23,9 +23,10 @@ def test_hunt_table(capsys: pytest.CaptureFixture[str]) -> None:
     assert [line.split()[:2] for line in lines[1:]] == [
         ["high", "2"],
         ["high", "1"],
+        ["high", "1"],
         ["medium", "1"],
     ]
-    assert "3 of 3 rules matched 8 events (0 rules skipped)" in out.err
+    assert "4 of 4 rules matched 12 events (0 rules skipped)" in out.err
 
 
 def test_hunt_json_with_examples(capsys: pytest.CaptureFixture[str]) -> None:
@@ -61,7 +62,7 @@ def test_hunt_reads_parquet_and_csv(tmp_path: Path, capsys: pytest.CaptureFixtur
         main(["hunt", RULES, "--logs", str(tmp_path / "*.parquet"), str(tmp_path / "*.csv")]) == 0
     )
     out = capsys.readouterr()
-    assert "3 of 3 rules matched 8 events" in out.err
+    assert "4 of 4 rules matched 12 events" in out.err
 
 
 def test_hunt_rejects_unknown_log_type(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

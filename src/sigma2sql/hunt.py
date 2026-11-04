@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import ipaddress
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from sigma2sql.collection import Collection
+from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
-from sigma2sql.rule import Rule
+from sigma2sql.rule import Correlation, Document
 from sigma2sql.sql import Target, literal, to_query
 
 LEVELS = ("critical", "high", "medium", "low", "informational")
@@ -19,7 +20,7 @@ COLUMN = "data"
 
 @dataclass
 class Hit:
-    rule: Rule
+    rule: Document
     count: int
     examples: list[str] = field(default_factory=list)
 
@@ -33,7 +34,7 @@ class Report:
     events: int
     hits: list[Hit]
     ran: int
-    skipped: list[tuple[Rule, str]]
+    skipped: list[tuple[Document, str]]
 
 
 def connect() -> Any:
@@ -66,28 +67,43 @@ def load_logs(con: Any, paths: list[str]) -> int:
 
 
 def hunt(
-    rules: list[Rule],
-    paths: list[str],
-    mapping: Mapping[str, str] | None = None,
-    examples: int = 0,
+    rules: Collection, paths: list[str], base: Target | None = None, examples: int = 0
 ) -> Report:
+    """Run every rule and correlation in `rules` over the logs in `paths`.
+
+    `base` carries the field mapping and timestamp settings; table and dialect are set here.
+    """
     con = connect()
     events = load_logs(con, paths)
-    target = Target("duckdb", TABLE, dict(mapping or {}), json_column=COLUMN)
+    target = replace(base or Target(), dialect="duckdb", table=TABLE, json_column=COLUMN)
+    items: list[Document] = [*rules.standalone(), *rules.correlations]
     hits: list[Hit] = []
-    skipped: list[tuple[Rule, str]] = []
-    for rule in rules:
+    skipped: list[tuple[Document, str]] = []
+    for item in items:
         try:
-            query = to_query(rule, target, columns=f"CAST({COLUMN} AS VARCHAR)")
+            query, as_rows = _query(item, rules, target)
         except (RuleError, UnsupportedRule) as exc:
-            skipped.append((rule, str(exc)))
+            skipped.append((item, str(exc)))
             continue
-        count = con.execute(f"SELECT COUNT(*) FROM ({query})").fetchone()[0]
-        if count:
-            sample = con.execute(f"{query} LIMIT {examples}").fetchall() if examples else []
-            hits.append(Hit(rule, count, [row[0] for row in sample]))
+        count = con.execute(f"SELECT COUNT(*) FROM ({query}) q").fetchone()[0]
+        if not count:
+            continue
+        sample: list[str] = []
+        if examples:
+            shown = f"SELECT CAST(to_json(q) AS VARCHAR) FROM ({query}) q" if as_rows else query
+            sample = [row[0] for row in con.execute(f"{shown} LIMIT {examples}").fetchall()]
+        hits.append(Hit(item, count, sample))
     hits.sort(key=lambda h: (h.rank, -h.count, h.rule.title))
-    return Report(events, hits, len(rules) - len(skipped), skipped)
+    return Report(events, hits, len(items) - len(skipped), skipped)
+
+
+def _query(item: Document, rules: Collection, target: Target) -> tuple[str, bool]:
+    """The SQL for one item and whether it returns result rows rather than events."""
+    if isinstance(item, Correlation):
+        return correlation_query(item, rules.resolve(item), target), True
+    if item.aggregation is not None:
+        return to_query(item, target), True
+    return to_query(item, target, columns=f"CAST({COLUMN} AS VARCHAR)"), False
 
 
 def _cidr_match(value: str, network: str) -> bool:

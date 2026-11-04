@@ -39,7 +39,7 @@ def test_keywords_need_somewhere_to_search() -> None:
 @pytest.mark.parametrize(
     ("detection", "error", "message"),
     [
-        ("sel: {A: 1}\ncondition: sel | count() > 5", UnsupportedRule, "aggregation"),
+        ("sel: {A: 1}\ncondition: sel | max(A) > 5", UnsupportedRule, "only count"),
         ("sel: {A|base64offset: x}\ncondition: sel", UnsupportedRule, "base64offset"),
         ("sel: {A: 1}\ncondition: other", RuleError, "unknown search"),
         ("sel: {A: 1}\ncondition: 1 of filter_*", RuleError, "does not match"),
@@ -67,11 +67,17 @@ def test_rule_metadata_and_multiple_conditions() -> None:
 @pytest.mark.parametrize(
     ("text", "error"),
     [
-        ("title: x\n---\ntitle: y\n", UnsupportedRule),
+        ("action: global\ntitle: x\n", UnsupportedRule),
+        ("filter:\n  rules: [a]\n", UnsupportedRule),
         ("- a\n- b\n", RuleError),
         ("title: x\n", RuleError),
         ("detection:\n  sel: {A: 1}\n", RuleError),
-        ("detection:\n  sel: {A: 1}\n  timeframe: 5m\n  condition: sel\n", UnsupportedRule),
+        (
+            "detection:\n  s: {A: 1}\n  condition: s\n"
+            "---\ndetection:\n  s: {B: 1}\n  condition: s\n",
+            UnsupportedRule,
+        ),
+        ("logsource: x\ndetection:\n  s: {A: 1}\n  condition: s\n", RuleError),
         ("detection: [\n", RuleError),
     ],
 )

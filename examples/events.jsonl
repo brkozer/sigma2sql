@@ -6,3 +6,7 @@
 {"EventID": 4624, "LogonType": 10, "IpAddress": "203.0.113.45", "TargetUserName": "admin"}
 {"EventID": "4624", "LogonType": "10", "IpAddress": "192.168.1.20", "TargetUserName": "admin"}
 {"EventID": 4624, "LogonType": 3, "IpAddress": "198.51.100.7", "TargetUserName": "svc_backup"}
+{"EventID": 4625, "LogonType": 3, "IpAddress": "198.51.100.23", "TargetUserName": "admin", "timestamp": "2026-11-01T03:12:01Z"}
+{"EventID": 4625, "LogonType": 3, "IpAddress": "198.51.100.23", "TargetUserName": "admin", "timestamp": "2026-11-01T03:12:09Z"}
+{"EventID": 4625, "LogonType": 3, "IpAddress": "198.51.100.23", "TargetUserName": "admin", "timestamp": "2026-11-01T03:12:17Z"}
+{"EventID": 4625, "LogonType": 3, "IpAddress": "198.51.100.40", "TargetUserName": "svc_backup", "timestamp": "2026-11-01T09:00:00Z"}
