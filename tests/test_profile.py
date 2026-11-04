@@ -173,3 +173,21 @@ def test_bad_profiles(tmp_path: Path, text: str, message: str) -> None:
 def test_unknown_profile_name() -> None:
     with pytest.raises(ValueError, match="built in: ecs-winlogbeat, evtx, ocsf, sysmon"):
         load_profile("splunk")
+
+
+@pytest.mark.parametrize("engine", ENGINES, ids=lambda f: f.__name__)
+def test_evtx_profile_candidates(engine: Engine) -> None:
+    """EventID may be a number or {"#text": n}; Defender spells NewValue as "New Value"."""
+    tgt = apply_profile(Target(), load_profile("evtx"))
+    events = [
+        {"Event": {"System": {"EventID": 5007}, "EventData": {"New Value": "HKLM\Exclusions\x"}}},
+        {
+            "Event": {
+                "System": {"EventID": {"#attributes": {"Qualifiers": 0}, "#text": 5007}},
+                "EventData": {"NewValue": "HKLM\Exclusions\y"},
+            }
+        },
+        {"Event": {"System": {"EventID": 5007}, "EventData": {"OldValue": "HKLM\Exclusions\z"}}},
+    ]
+    detection = "s:\n  EventID: 5007\n  NewValue|contains: '\Exclusions\'\ncondition: s"
+    assert engine(rule("", detection), events, tgt) == [0, 1]

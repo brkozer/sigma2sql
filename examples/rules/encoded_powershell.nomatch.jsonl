@@ -1,0 +1,3 @@
+{"EventID": 1, "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "ParentImage": "C:\\Program Files\\Microsoft Configuration Manager\\bin\\ccmexec.exe", "CommandLine": "powershell.exe -enc SQBFAFgA"}
+{"EventID": 1, "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "ParentImage": "C:\\Windows\\explorer.exe", "CommandLine": "powershell.exe -File C:\\scripts\\encode.ps1"}
+{"EventID": 1, "Image": "C:\\Windows\\System32\\cmd.exe", "ParentImage": "C:\\Windows\\explorer.exe", "CommandLine": "cmd.exe /c echo -enc "}

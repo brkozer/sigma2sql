@@ -75,4 +75,4 @@ build-backend = "hatchling.build"
 packages = ["src/sigma2sql"]
 
 [tool.hatch.build.targets.sdist]
-exclude = [".github", "docs", "uv.lock"]
+exclude = [".github", "docs", "uv.lock", "action.yml"]

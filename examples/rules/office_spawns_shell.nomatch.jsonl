@@ -1,0 +1,2 @@
+{"EventID": 1, "Image": "C:\\Windows\\System32\\cmd.exe", "ParentImage": "C:\\Windows\\explorer.exe", "CommandLine": "cmd.exe"}
+{"EventID": 1, "Image": "C:\\Windows\\splwow64.exe", "ParentImage": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE", "CommandLine": "splwow64.exe 8192"}

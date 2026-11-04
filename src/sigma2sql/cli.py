@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from sigma2sql.collection import Collection
+from sigma2sql.collection import Collection, rule_files
 from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.hunt import LEVELS, Hit, Report, hunt
@@ -57,6 +57,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     _field_options(hunt_p)
 
+    check = sub.add_parser(
+        "check", help="test rules against their <rule>.match.jsonl / <rule>.nomatch.jsonl files"
+    )
+    check.add_argument("paths", nargs="+", type=Path, help="rule files or directories")
+    check.add_argument(
+        "--require-tests", action="store_true", help="fail when a rule has no test events"
+    )
+    _field_options(check)
+
     sub.add_parser("profiles", help="list the built-in profiles")
 
     args = parser.parse_args(argv)
@@ -77,6 +86,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _convert(args.paths, target)
     if args.command == "hunt":
         return _hunt(args, target)
+    if args.command == "check":
+        return _check(args.paths, target, args.require_tests)
     return _test(args.rule, args.events, target, args.expect)
 
 
@@ -183,6 +194,66 @@ def _test(path: Path, events_path: Path, target: Target, expect: str | None) -> 
     if expect == "none" and any(matched):
         return 1
     return 0
+
+
+def _check(paths: list[Path], target: Target, require_tests: bool) -> int:
+    passed = failed = untested = 0
+    for path in rule_files(paths):
+        cases = [
+            (f, f.name.endswith(".match.jsonl"))
+            for f in (path.with_suffix(".match.jsonl"), path.with_suffix(".nomatch.jsonl"))
+            if f.exists()
+        ]
+        if not cases:
+            untested += 1
+            if require_tests:
+                failed += 1
+                print(f"FAIL {path}: no {path.stem}.match.jsonl or .nomatch.jsonl")
+            continue
+        problems = _check_rule(path, cases, target)
+        if problems:
+            failed += 1
+            for problem in problems:
+                print(f"FAIL {path}: {problem}")
+        else:
+            passed += 1
+            print(f"ok   {path}")
+    print(f"{passed} passed, {failed} failed, {untested} without tests", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def _check_rule(path: Path, cases: list[tuple[Path, bool]], target: Target) -> list[str]:
+    col = Collection.load([path])
+    if col.errors:
+        return [reason for _, reason in col.errors]
+    problems: list[str] = []
+    items: list[Document] = [*col.standalone(), *col.correlations]
+    for events_path, should_match in cases:
+        try:
+            events = read_jsonl(events_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return [f"{events_path.name}: {exc}"]
+        for item in items:
+            try:
+                if isinstance(item, Correlation) or item.aggregation is not None:
+                    found = rows(_sql(item, col, runner_target(target)), events)
+                    if should_match and not found:
+                        problems.append(f"{item.title}: no result for {events_path.name}")
+                    elif not should_match and found:
+                        problems.append(
+                            f"{item.title}: {len(found)} results for {events_path.name}"
+                        )
+                    continue
+                hits = set(matching_events(item, events, target))
+            except (RuleError, UnsupportedRule) as exc:
+                problems.append(f"{item.title}: {exc}")
+                continue
+            wrong = sorted(set(range(len(events))) - hits if should_match else hits)
+            if wrong:
+                lines = ", ".join(str(i + 1) for i in wrong)
+                verb = "missed" if should_match else "matched"
+                problems.append(f"{item.title}: {verb} {events_path.name} event(s) {lines}")
+    return problems
 
 
 def _hunt(args: argparse.Namespace, target: Target) -> int:

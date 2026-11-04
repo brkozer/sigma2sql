@@ -1,0 +1,3 @@
+{"EventID": 1, "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "ParentImage": "C:\\Windows\\explorer.exe", "CommandLine": "powershell.exe -NoProfile -enc SQBFAFgA"}
+{"EventID": 1, "Image": "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "ParentImage": "C:\\Windows\\explorer.exe", "CommandLine": "pwsh.exe /ec SQBFAFgA"}
+{"EventID": 1, "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\POWERSHELL.EXE", "ParentImage": "C:\\Windows\\System32\\cmd.exe", "CommandLine": "POWERSHELL -EncodedCommand SQBFAFgA "}
