@@ -172,9 +172,7 @@ class Renderer:
             return f"{col} ~ {literal(pattern)}"
         if self.d == "duckdb":
             if RE2_UNSUPPORTED.search(pattern):
-                raise UnsupportedRule(
-                    f"duckdb (RE2) has no lookaround or backreferences: {pattern}"
-                )
+                raise UnsupportedRule(f"duckdb (RE2) has no lookaround or backreferences: {pattern}")
             return f"regexp_matches({col}, {literal(pattern)})"
         return f"{col} REGEXP {literal(pattern)}"
 

@@ -8,12 +8,17 @@ authors = [{ name = "Ahmet Burak Özer" }]
 requires-python = ">=3.12"
 dependencies = ["pyyaml>=6.0.2"]
 
+[project.optional-dependencies]
+duckdb = ["duckdb>=1.1", "numpy>=2.0"]
+
 [project.scripts]
 sigma2sql = "sigma2sql.cli:main"
 
 [dependency-groups]
 dev = [
+    "duckdb>=1.1",
     "mypy>=2.4.1",
+    "numpy>=2.0",
     "psycopg[binary]>=3.2.3",
     "pytest>=9.2.0",
     "rich>=14.0.0",
