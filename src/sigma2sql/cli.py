@@ -149,7 +149,7 @@ def _hunt(args: argparse.Namespace, mapping: dict[str, str]) -> int:
 def _print_table(report: Report) -> None:
     if not report.hits:
         return
-    width = max(len(str(h.count)) for h in report.hits)
+    width = max(4, *(len(str(h.count)) for h in report.hits))
     print(f"{'LEVEL':<14}{'HITS':>{width}}  RULE")
     for h in report.hits:
         where = f"  ({h.rule.path})" if h.rule.path else ""

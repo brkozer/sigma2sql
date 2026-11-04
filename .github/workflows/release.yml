@@ -1,0 +1,41 @@
+name: release
+
+# Builds on every published GitHub release. Publishing to PyPI uses trusted publishing
+# (no token in the repo) and runs only once the repository variable PYPI_PUBLISH is "true",
+# i.e. after the PyPI project has this workflow registered as a trusted publisher.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - name: Smoke-test the wheel
+        run: |
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke "$(ls dist/*.whl)[duckdb]"
+          /tmp/smoke/bin/sigma2sql test examples/rules/office_spawns_shell.yml examples/events.jsonl --expect match
+          /tmp/smoke/bin/sigma2sql hunt examples/rules --logs examples/events.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

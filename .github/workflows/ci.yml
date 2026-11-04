@@ -29,6 +29,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run pytest -q
+      - run: uv build
       - name: Convert and execute all SigmaHQ rules
         run: |
           git clone --depth 1 https://github.com/SigmaHQ/sigma.git /tmp/sigma

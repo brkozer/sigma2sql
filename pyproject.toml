@@ -6,7 +6,27 @@ readme = "README.md"
 license = "MIT"
 authors = [{ name = "Ahmet Burak Özer" }]
 requires-python = ">=3.12"
+keywords = ["sigma", "detection-engineering", "threat-hunting", "sql", "duckdb", "postgresql", "siem"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
 dependencies = ["pyyaml>=6.0.2"]
+
+[project.urls]
+Homepage = "https://github.com/brkozer/sigma2sql"
+Issues = "https://github.com/brkozer/sigma2sql/issues"
+Changelog = "https://github.com/brkozer/sigma2sql/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 duckdb = ["duckdb>=1.1", "numpy>=2.0"]
@@ -48,3 +68,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sigma2sql"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [".github", "docs", "uv.lock"]
