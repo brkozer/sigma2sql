@@ -10,6 +10,7 @@ A profile is a YAML file:
     default_field: "winlog.event_data.{field}"
     fields:
       Image: process.executable
+      EventID: [Event.System.EventID.#text, Event.System.EventID]   # first present wins
     logsources:
       - match: {product: windows, category: process_creation}
         table: process_events    # optional
@@ -90,18 +91,29 @@ def apply_profile(target: Target, profile: dict[str, Any]) -> Target:
             )
         )
     template = profile.get("default_field")
-    if template is not None and "{field}" not in str(template):
-        raise ValueError("profile 'default_field' must contain {field}")
+    templates = None
+    if template is not None:
+        templates = tuple(template) if isinstance(template, list) else (str(template),)
+        if not all("{field" in t for t in templates):
+            raise ValueError("profile 'default_field' must contain {field} or {field_words}")
     fmt = profile.get("timestamp_format", target.timestamp_format)
     if fmt not in ("iso", "epoch_s", "epoch_ms"):
         raise ValueError(f"invalid timestamp_format {fmt!r}")
     return replace(
         target,
-        mapping={**{str(k): str(v) for k, v in fields.items()}, **target.mapping},
+        mapping={**{str(k): _target_field(v) for k, v in fields.items()}, **target.mapping},
         json_column=profile.get("json_column", target.json_column),
         nested=bool(profile.get("nested", target.nested)),
         timestamp=str(profile.get("timestamp", target.timestamp)),
         timestamp_format=fmt,
-        default_field=str(template) if template is not None else target.default_field,
+        default_field=templates if templates is not None else target.default_field,
         routes=(*target.routes, *routes),
     )
+
+
+def _target_field(value: Any) -> str | tuple[str, ...]:
+    if isinstance(value, list):
+        if not value or not all(isinstance(v, str) for v in value):
+            raise ValueError("a profile field list must hold field names")
+        return tuple(value)
+    return str(value)

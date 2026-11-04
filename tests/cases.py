@@ -172,6 +172,17 @@ CASES: list[Case] = [
         [1, 2],
     ),
     (
+        "windash also expands values written with a slash, and every flag in a value",
+        "sel: {CommandLine|windash|contains: ' /accepteula -ma '}\ncondition: sel",
+        [
+            {"CommandLine": "pd.exe -accepteula -ma 123"},
+            {"CommandLine": "pd.exe /accepteula /ma 123"},
+            {"CommandLine": "pd.exe –accepteula /ma 123"},
+            {"CommandLine": "pd.exe accepteula ma 123"},
+        ],
+        [0, 1, 2],
+    ),
+    (
         "base64 is case-sensitive",
         "sel: {CommandLine|base64|contains: 'IEX'}\ncondition: sel",
         [{"CommandLine": f"powershell -e {b64(b'IEX')}"}, {"CommandLine": "powershell -e suvy"}],

@@ -1,0 +1,71 @@
+description: Windows event logs exported to JSON by evtx_dump or python-evtx (Event.System / Event.EventData)
+nested: true
+timestamp: "Event.System.TimeCreated.#attributes.SystemTime"
+# Some providers (e.g. Defender) name fields with spaces: "New Value" for NewValue.
+default_field: ["Event.EventData.{field}", "Event.EventData.{field_words}"]
+fields:
+  # EventID carries Qualifiers on some logs and then becomes {"#attributes": ..., "#text": N}.
+  EventID: [Event.System.EventID.#text, Event.System.EventID]
+  Channel: Event.System.Channel
+  Computer: Event.System.Computer
+  Provider_Name: Event.System.Provider.#attributes.Name
+  Level: Event.System.Level
+  Keywords: Event.System.Keywords
+  # WMI-Activity events keep their data under UserData, one element per event type.
+  Operation:
+    - Event.EventData.Operation
+    - Event.UserData.Operation_ClientFailure.Operation
+    - Event.UserData.Operation_StartedOperational.Operation
+  ClientMachine: [Event.EventData.ClientMachine, Event.UserData.Operation_ClientFailure.ClientMachine]
+  PossibleCause: [Event.EventData.PossibleCause, Event.UserData.Operation_ClientFailure.PossibleCause]
+  Consumer: [Event.EventData.Consumer, Event.UserData.Operation_ESStoConsumerBinding.CONSUMER]
+  Query: [Event.EventData.Query, Event.UserData.Operation_TemporaryEssStarted.Query]
+logsources:
+  # Sysmon categories: the Sysmon channel plus the category's event ID.
+  - {match: {product: windows, category: process_creation}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 1}}
+  - {match: {product: windows, category: file_change}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 2}}
+  - {match: {product: windows, category: network_connection}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 3}}
+  - {match: {product: windows, category: process_termination}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 5}}
+  - {match: {product: windows, category: driver_load}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 6}}
+  - {match: {product: windows, category: image_load}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 7}}
+  - {match: {product: windows, category: create_remote_thread}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 8}}
+  - {match: {product: windows, category: raw_access_thread}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 9}}
+  - {match: {product: windows, category: process_access}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 10}}
+  - {match: {product: windows, category: file_event}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 11}}
+  - {match: {product: windows, category: registry_add}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 12}}
+  - {match: {product: windows, category: registry_delete}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 12}}
+  - {match: {product: windows, category: registry_set}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 13}}
+  - {match: {product: windows, category: registry_rename}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 14}}
+  - {match: {product: windows, category: registry_event}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: [12, 13, 14]}}
+  - {match: {product: windows, category: create_stream_hash}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 15}}
+  - {match: {product: windows, category: pipe_created}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: [17, 18]}}
+  - {match: {product: windows, category: wmi_event}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: [19, 20, 21]}}
+  - {match: {product: windows, category: dns_query}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 22}}
+  - {match: {product: windows, category: file_delete}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: [23, 26]}}
+  - {match: {product: windows, category: clipboard_capture}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 24}}
+  - {match: {product: windows, category: process_tampering}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 25}}
+  - {match: {product: windows, category: file_executable_detected}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational, Event.System.EventID: 29}}
+  # PowerShell categories.
+  - {match: {product: windows, category: ps_script}, where: {Event.System.Channel: Microsoft-Windows-PowerShell/Operational, Event.System.EventID: 4104}}
+  - {match: {product: windows, category: ps_module}, where: {Event.System.Channel: Microsoft-Windows-PowerShell/Operational, Event.System.EventID: 4103}}
+  - {match: {product: windows, category: ps_classic_start}, where: {Event.System.Channel: Windows PowerShell, Event.System.EventID: 400}}
+  - {match: {product: windows, category: ps_classic_provider_start}, where: {Event.System.Channel: Windows PowerShell, Event.System.EventID: 600}}
+  # Services map to their channel.
+  - {match: {product: windows, service: security}, where: {Event.System.Channel: Security}}
+  - {match: {product: windows, service: system}, where: {Event.System.Channel: System}}
+  - {match: {product: windows, service: application}, where: {Event.System.Channel: Application}}
+  - {match: {product: windows, service: sysmon}, where: {Event.System.Channel: Microsoft-Windows-Sysmon/Operational}}
+  - {match: {product: windows, service: powershell}, where: {Event.System.Channel: Microsoft-Windows-PowerShell/Operational}}
+  - {match: {product: windows, service: powershell-classic}, where: {Event.System.Channel: Windows PowerShell}}
+  - {match: {product: windows, service: taskscheduler}, where: {Event.System.Channel: Microsoft-Windows-TaskScheduler/Operational}}
+  - {match: {product: windows, service: wmi}, where: {Event.System.Channel: Microsoft-Windows-WMI-Activity/Operational}}
+  - {match: {product: windows, service: windefend}, where: {Event.System.Channel: Microsoft-Windows-Windows Defender/Operational}}
+  - {match: {product: windows, service: bits-client}, where: {Event.System.Channel: Microsoft-Windows-Bits-Client/Operational}}
+  - {match: {product: windows, service: firewall-as}, where: {Event.System.Channel: Microsoft-Windows-Windows Firewall With Advanced Security/Firewall}}
+  - {match: {product: windows, service: appxdeployment-server}, where: {Event.System.Channel: Microsoft-Windows-AppXDeploymentServer/Operational}}
+  - {match: {product: windows, service: codeintegrity-operational}, where: {Event.System.Channel: Microsoft-Windows-CodeIntegrity/Operational}}
+  - {match: {product: windows, service: dns-client}, where: {Event.System.Channel: Microsoft-Windows-DNS Client Events/Operational}}
+  - {match: {product: windows, service: driver-framework}, where: {Event.System.Channel: Microsoft-Windows-DriverFrameworks-UserMode/Operational}}
+  - {match: {product: windows, service: ntlm}, where: {Event.System.Channel: Microsoft-Windows-NTLM/Operational}}
+  - {match: {product: windows, service: terminalservices-localsessionmanager}, where: {Event.System.Channel: Microsoft-Windows-TerminalServices-LocalSessionManager/Operational}}
+  - {match: {product: windows, service: openssh}, where: {Event.System.Channel: OpenSSH/Operational}}

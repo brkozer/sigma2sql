@@ -38,6 +38,8 @@ GROUP = 50
 MAX_REPEAT: dict[Dialect, int | None] = {"sqlite": None, "postgres": 255, "duckdb": 1000}
 REPEAT = re.compile(r"\{(\d+)(?:,(\d*))?\}")
 # RE2 (DuckDB) has no lookaround or backreferences.
+# Word boundaries inside CamelCase names: NewValue -> New Value.
+CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 RE2_UNSUPPORTED = re.compile(r"\(\?<?[=!]|\\[1-9]")
 
 
@@ -64,19 +66,21 @@ class Target:
     With `json_column`, every event is one JSON object in that column and fields are
     read as top-level keys (or, with `nested`, dotted paths into nested objects).
     Otherwise each field is its own column. A field missing from `mapping` is looked up
-    as `default_field` with `{field}` replaced, or under its own name.
+    through the `default_field` templates (`{field}` is the Sigma name, `{field_words}` the
+    same name split into words, e.g. "New Value"), or under its own name.
     """
 
     dialect: Dialect = "sqlite"
     table: str = "events"
-    mapping: Mapping[str, str] = field(default_factory=dict)
+    # Sigma field -> column/key, or a sequence of candidates tried in order.
+    mapping: Mapping[str, str | tuple[str, ...]] = field(default_factory=dict)
     json_column: str | None = None
     keyword_column: str | None = None
     # Event time, used by correlations and aggregations with a timespan.
     timestamp: str = "timestamp"
     timestamp_format: TimestampFormat = "iso"
     nested: bool = False
-    default_field: str | None = None
+    default_field: str | tuple[str, ...] | None = None
     routes: tuple[Route, ...] = ()
 
 
@@ -168,8 +172,18 @@ class Renderer:
     def column(self, sigma_field: str) -> str:
         name = self.t.mapping.get(sigma_field)
         if name is None:
-            template = self.t.default_field
-            name = template.replace("{field}", sigma_field) if template else sigma_field
+            templates = self.t.default_field
+            if isinstance(templates, str):
+                templates = (templates,)
+            name = _expand(templates, sigma_field) if templates else sigma_field
+        if not isinstance(name, str):
+            if len(name) == 1:
+                return self.path(name[0])
+            # Several candidate locations: the first one present wins.
+            return f"COALESCE({', '.join(self.path(n) for n in name)})"
+        return self.path(name)
+
+    def path(self, name: str) -> str:
         if self.t.json_column is None:
             return quote_ident(name)
         col = quote_ident(self.t.json_column)
@@ -262,6 +276,16 @@ class Renderer:
     def same(self, a: str, b: str) -> str:
         """Null-safe equality."""
         return f"{a} IS {b}" if self.d == "sqlite" else f"{a} IS NOT DISTINCT FROM {b}"
+
+
+def _expand(templates: tuple[str, ...], sigma_field: str) -> tuple[str, ...]:
+    words = CAMEL.sub(" ", sigma_field)
+    names: list[str] = []
+    for template in templates:
+        name = template.replace("{field_words}", words).replace("{field}", sigma_field)
+        if name not in names:
+            names.append(name)
+    return tuple(names)
 
 
 def _dq(key: str) -> str:

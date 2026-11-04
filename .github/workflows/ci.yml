@@ -41,3 +41,7 @@ jobs:
           mkdir /tmp/agg
           grep -rlE 'condition:.*\| *count' --include=*.yml /tmp/sigma/unsupported /tmp/sigma/deprecated | xargs -I{} cp {} /tmp/agg/
           uv run python scripts/check_sigmahq.py /tmp/agg --dsn "$SIGMA2SQL_PG_DSN"
+      - name: Run SigmaHQ regression samples (real events) through every rule
+        run: uv run python scripts/check_regression.py /tmp/sigma
+      - name: Compare with pySigma's SQLite backend on the same events
+        run: uv run --with pysigma --with pysigma-backend-sqlite python scripts/diff_pysigma.py /tmp/sigma

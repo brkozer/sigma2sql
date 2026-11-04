@@ -150,7 +150,7 @@ def test_cli_overrides_profile(tmp_path: Path, capsys: pytest.CaptureFixture[str
 def test_profiles_command(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["profiles"]) == 0
     names = [line.split()[0] for line in capsys.readouterr().out.splitlines()]
-    assert names == ["ecs-winlogbeat", "ocsf", "sysmon"]
+    assert names == ["ecs-winlogbeat", "evtx", "ocsf", "sysmon"]
     assert set(builtin_profiles()) == set(names)
 
 
@@ -171,5 +171,5 @@ def test_bad_profiles(tmp_path: Path, text: str, message: str) -> None:
 
 
 def test_unknown_profile_name() -> None:
-    with pytest.raises(ValueError, match="built in: ecs-winlogbeat, ocsf, sysmon"):
+    with pytest.raises(ValueError, match="built in: ecs-winlogbeat, evtx, ocsf, sysmon"):
         load_profile("splunk")

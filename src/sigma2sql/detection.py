@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import itertools
+import re
 from typing import Any, Literal
 
 from sigma2sql.errors import RuleError, UnsupportedRule
@@ -39,6 +41,9 @@ KEYWORD_MODS = POSITION | set(ENCODINGS) | BASE64 | {"all", "cased", "windash", 
 
 # Characters Windows command-line tools accept in place of a leading dash.
 WINDASH = ("-", "/", "–", "—", "―")
+# A `-` or `/` that starts a word (same rule as pySigma).
+WINDASH_FLAG = re.compile(r"\B[-/]\b")
+MAX_WINDASH_FLAGS = 3
 
 
 def compile_search(name: str, value: Any) -> Expr:
@@ -185,13 +190,21 @@ def _offsets(data: bytes) -> list[str]:
 
 
 def _windash(raw: str) -> list[str]:
-    """Return one variant per dash character, replacing every dash that starts a word."""
+    """Every way of writing the value's command-line flags with each WINDASH character.
+
+    A flag is a `-` or `/` that starts a word, so ` /accepteula` also matches ` -accepteula`.
+    """
+    positions = [m.start() for m in WINDASH_FLAG.finditer(raw)]
+    if len(positions) > MAX_WINDASH_FLAGS:
+        # Too many combinations: use one dash style for all flags at once.
+        combos: list[tuple[str, ...]] = [(dash,) * len(positions) for dash in WINDASH]
+    else:
+        combos = list(itertools.product(WINDASH, repeat=len(positions)))
     out: list[str] = []
-    for dash in WINDASH:
+    for combo in combos:
         chars = list(raw)
-        for i, ch in enumerate(chars):
-            if ch == "-" and (i == 0 or chars[i - 1] == " "):
-                chars[i] = dash
+        for pos, dash in zip(positions, combo, strict=True):
+            chars[pos] = dash
         variant = "".join(chars)
         if variant not in out:
             out.append(variant)
