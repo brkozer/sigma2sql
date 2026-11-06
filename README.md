@@ -107,7 +107,7 @@ allows distinct counts:
 title: Brute force against one account
 correlation:
   type: event_count          # also value_count, value_sum, value_avg, value_median,
-                             # value_percentile, temporal
+                             # value_percentile, temporal, temporal_ordered
   rules: [failed_logon]
   group-by: [TargetUserName]
   timespan: 5m
@@ -116,8 +116,10 @@ correlation:
 
 Each result row holds the group values, the window's start and end (`first_seen` and
 `last_seen` without a `timespan`) and the counted value. Rules referenced by a correlation are
-not reported on their own unless it sets `generate: true`. `temporal_ordered` is not supported
-yet.
+not reported on their own unless it sets `generate: true`. `temporal_ordered` gives a row for
+every start time of a complete sequence in a group, so a repeated attack is reported each time.
+Events with the same timestamp count as in order, because many logs only have whole seconds,
+except that a rule that comes back needs a later event than its previous step.
 
 ## Placeholders
 
@@ -224,7 +226,7 @@ files exits with code 2, also next to a good path.
 The same check as a GitHub Action:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.3.1
+- uses: brkozer/sigma2sql@v0.3.2
   with:
     path: rules
     profile: sysmon          # optional
@@ -249,7 +251,7 @@ produces.
 | `minute`, `hour`, `day`, `week`, `month`, `year` (UTC, ISO weeks) | ✓ | ✓ | ✓ | ✓ |
 | `expand` placeholders, filters | ✓ | ✓ | ✓ | ✓ |
 | correlations, `count()` aggregations | ✓ ¹ | ✓ | ✓ | ✓ ⁵ |
-| `temporal_ordered`, `temporal` with a boolean condition | – | – | – | – |
+| `temporal` with a boolean condition | – | – | – | – |
 
 ¹ Not built into the database. `hunt`, `test` and `check` register them; when you run the SQL
 elsewhere, register `regexp(pattern, value)`, `cidr_match(value, network)` and, for

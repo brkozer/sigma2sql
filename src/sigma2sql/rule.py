@@ -22,6 +22,7 @@ CorrelationType = Literal[
     "value_median",
     "value_percentile",
     "temporal",
+    "temporal_ordered",
 ]
 CORRELATION_TYPES: tuple[CorrelationType, ...] = (
     "event_count",
@@ -31,6 +32,7 @@ CORRELATION_TYPES: tuple[CorrelationType, ...] = (
     "value_median",
     "value_percentile",
     "temporal",
+    "temporal_ordered",
 )
 VALUE_TYPES = ("value_count", "value_sum", "value_avg", "value_median", "value_percentile")
 OPS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "="}
@@ -280,8 +282,6 @@ def _correlation(doc: dict[str, Any], path: Path | None) -> Correlation:
     if not isinstance(spec, dict):
         raise RuleError("'correlation' must be a map")
     kind = spec.get("type")
-    if kind == "temporal_ordered":
-        raise UnsupportedRule("temporal_ordered correlations are not supported")
     if kind not in CORRELATION_TYPES:
         raise UnsupportedRule(f"correlation type {kind!r} is not supported")
 
@@ -306,7 +306,12 @@ def _correlation(doc: dict[str, Any], path: Path | None) -> Correlation:
         if op not in OPS or isinstance(value, bool) or not isinstance(value, int | float):
             raise RuleError(f"invalid correlation condition {op}: {value!r}")
         condition.append((op, float(value)))
+    # A rule listed twice still only counts once for `temporal`.
     if kind == "temporal" and not condition:
+        condition = [("gte", float(len({str(rule) for rule in rules})))]
+    if kind == "temporal_ordered":
+        if condition not in ([], [("gte", float(len(rules)))]):
+            raise UnsupportedRule("temporal_ordered needs all of its rules, in order")
         condition = [("gte", float(len(rules)))]
     if not condition:
         raise RuleError("correlation needs a condition")

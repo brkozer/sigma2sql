@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 (2026-11-07)
+
+- `temporal_ordered` correlations, on all four databases. A row for every start time of a
+  complete sequence in a group, not only the first.
+- Fix: a rule listed twice in a correlation counted its events twice. Thanks to @ghostfix-pm
+  for reporting this and for the first `temporal_ordered` proposal in #1.
+
 ## 0.3.1 (2026-11-07)
 
 - Documentation site: <https://brkozer.github.io/sigma2sql/>.

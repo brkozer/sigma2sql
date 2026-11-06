@@ -31,6 +31,26 @@ detection:
   condition: sel
 """
 
+SEQUENCE = """title: Whoami
+name: whoami
+detection:
+  sel: {Image: whoami}
+  condition: sel
+---
+title: Net user
+name: netuser
+detection:
+  sel: {Image: net}
+  condition: sel
+---
+title: Recon
+correlation:
+  type: temporal_ordered
+  rules: [whoami, netuser]
+  group-by: [Host]
+  timespan: 5m
+"""
+
 CASES: list[tuple[str, str, list[dict[str, Any]], list[tuple[Any, ...]]]] = [
     (
         "event_count in a sliding window, grouped",
@@ -240,6 +260,112 @@ correlation:
         ],
         [(250,)],
     ),
+    (
+        "temporal_ordered reports every sequence, not only the first",
+        SEQUENCE,
+        [
+            {"Image": "whoami", "Host": "pc1", "timestamp": t(0)},
+            {"Image": "net", "Host": "pc1", "timestamp": t(1)},
+            {"Image": "whoami", "Host": "pc1", "timestamp": t(20)},
+            {"Image": "net", "Host": "pc1", "timestamp": t(21)},
+        ],
+        [("pc1", 2), ("pc1", 2)],
+    ),
+    (
+        "temporal_ordered ignores the wrong order",
+        SEQUENCE,
+        [
+            {"Image": "net", "Host": "pc1", "timestamp": t(0)},
+            {"Image": "whoami", "Host": "pc1", "timestamp": t(1)},
+        ],
+        [],
+    ),
+    (
+        "temporal_ordered keeps groups apart and respects the timespan",
+        SEQUENCE,
+        [
+            {"Image": "whoami", "Host": "pc1", "timestamp": t(0)},
+            {"Image": "net", "Host": "pc2", "timestamp": t(1)},
+            {"Image": "whoami", "Host": "pc3", "timestamp": t(0)},
+            {"Image": "net", "Host": "pc3", "timestamp": t(6)},
+            {"Image": "whoami", "Host": "pc4", "timestamp": t(0)},
+            {"Image": "net", "Host": "pc4", "timestamp": t(5)},
+        ],
+        [("pc4", 2)],
+    ),
+    (
+        "temporal_ordered counts equal timestamps as in order",
+        SEQUENCE,
+        [
+            {"Image": "whoami", "Host": "pc1", "timestamp": t(0)},
+            {"Image": "net", "Host": "pc1", "timestamp": t(0)},
+        ],
+        [("pc1", 2)],
+    ),
+    (
+        "temporal_ordered gives one row per start, however many ends follow",
+        SEQUENCE,
+        [
+            {"Image": "whoami", "Host": "pc1", "timestamp": t(0)},
+            {"Image": "net", "Host": "pc1", "timestamp": t(1)},
+            {"Image": "net", "Host": "pc1", "timestamp": t(2)},
+        ],
+        [("pc1", 2)],
+    ),
+    (
+        "temporal_ordered with three steps",
+        SEQUENCE.replace("rules: [whoami, netuser]", "rules: [whoami, netuser, whoami]"),
+        [
+            {"Image": "whoami", "Host": "pc1", "timestamp": t(0)},
+            {"Image": "net", "Host": "pc1", "timestamp": t(1)},
+            {"Image": "whoami", "Host": "pc1", "timestamp": t(2)},
+            {"Image": "whoami", "Host": "pc2", "timestamp": t(0)},
+            {"Image": "net", "Host": "pc2", "timestamp": t(1)},
+        ],
+        [("pc1", 3)],
+    ),
+    (
+        "temporal_ordered: a rule following itself needs a second event",
+        SEQUENCE.replace("rules: [whoami, netuser]", "rules: [whoami, whoami]"),
+        [
+            {"Image": "whoami", "Host": "pc1", "timestamp": t(0)},
+            {"Image": "whoami", "Host": "pc2", "timestamp": t(0)},
+            {"Image": "whoami", "Host": "pc2", "timestamp": t(1)},
+        ],
+        [("pc2", 2)],
+    ),
+    (
+        "a rule listed twice is counted once by event_count",
+        FAILED_LOGON
+        + """---
+title: Brute force
+correlation:
+  type: event_count
+  rules: [failed_logon, failed_logon]
+  group-by: [User]
+  condition: {gte: 2}
+""",
+        [
+            {"EventID": 4625, "User": "alice", "timestamp": t(0)},
+            {"EventID": 4625, "User": "bob", "timestamp": t(0)},
+            {"EventID": 4625, "User": "bob", "timestamp": t(1)},
+        ],
+        [("bob", 2)],
+    ),
+    (
+        "a rule listed twice is counted once by temporal",
+        FAILED_LOGON
+        + """---
+title: Any failure
+correlation:
+  type: temporal
+  rules: [failed_logon, failed_logon]
+  group-by: [User]
+  timespan: 5m
+""",
+        [{"EventID": 4625, "User": "alice", "timestamp": t(0)}],
+        [("alice", 1)],
+    ),
 ]
 
 
@@ -384,6 +510,72 @@ def test_time_field_kept_with_the_other_fields(
     assert run(BRUTE_FORCE, events, str(profile)) == [("admin", 3)]
 
 
+STEP_RULES = """
+title: A
+name: a
+detection: {s: {K: a}, condition: s}
+---
+title: B
+name: b
+detection: {s: {K: b}, condition: s}
+---
+title: seq
+correlation:
+  type: temporal_ordered
+  rules: %s
+  timespan: 5m
+"""
+
+
+@pytest.mark.parametrize(
+    "run", [run_sqlite, run_duckdb, run_postgres, run_clickhouse], ids=lambda r: r.__name__[4:]
+)
+@pytest.mark.parametrize(
+    ("rules", "events", "expected"),
+    [
+        ("[a, b, a]", [("a", 0), ("b", 0)], 0),
+        ("[a, b, a]", [("a", 0), ("b", 0), ("a", 1)], 1),
+        ("[a, b, a, b]", [("a", 0), ("b", 0)], 0),
+        ("[a, b, a, b]", [("a", 0), ("b", 0), ("a", 1), ("b", 1)], 1),
+        ("[a]", [("a", 0), ("a", None)], 1),
+    ],
+)
+def test_a_rule_that_comes_back_needs_a_later_event(
+    run: Callable[..., list[tuple[Any, ...]]],
+    rules: str,
+    events: list[tuple[str, int | None]],
+    expected: int,
+) -> None:
+    logs = [{"K": k} | ({"timestamp": t(m)} if m is not None else {}) for k, m in events]
+    assert len(run(STEP_RULES % rules, logs)) == expected
+
+
+def test_a_nested_list_of_rules_is_refused_not_a_crash() -> None:
+    text = FAILED_LOGON + "---\ntitle: x\ncorrelation: {type: temporal, rules: [[a], b]}\n"
+    with pytest.raises(RuleError):
+        _sql(text, target())
+
+
+def test_a_name_equal_to_another_rules_id_keeps_both() -> None:
+    text = """
+title: First
+id: shared
+detection: {s: {K: a}, condition: s}
+---
+title: Second
+name: shared
+id: second-id
+detection: {s: {K: b}, condition: s}
+---
+title: both
+correlation: {type: event_count, rules: [shared, second-id], condition: {gte: 2}}
+"""
+    docs = load_documents(text)
+    corr = next(d for d in docs if isinstance(d, Correlation))
+    first, second = (d for d in docs if isinstance(d, Rule))
+    assert correlation_query(corr, [first, second], target()).count("UNION ALL") == 1
+
+
 def test_mapping_can_move_the_time_field() -> None:
     tgt = Target("duckdb", json_column="data", mapping={"timestamp": "when"})
     assert "$.when" in _sql(BRUTE_FORCE, tgt)[0].replace('"', "")
@@ -419,7 +611,7 @@ def test_referenced_rules_are_not_standalone() -> None:
 @pytest.mark.parametrize(
     ("spec", "message"),
     [
-        ("type: temporal_ordered\n  rules: [a]", "temporal_ordered"),
+        ("type: temporal_ordered\n  rules: [a, a]\n  condition: {gte: 1}", "temporal_ordered"),
         ("type: value_median\n  rules: [a]\n  condition: {gte: 2}", "condition field"),
         (
             "type: value_percentile\n  rules: [a]\n  condition: {field: f, gte: 2}",
