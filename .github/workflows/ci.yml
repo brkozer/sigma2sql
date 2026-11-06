@@ -45,12 +45,12 @@ jobs:
           git -C /tmp/sigma log -1 --format="SigmaHQ %h (%cs)"
           uv run python scripts/check_sigmahq.py /tmp/sigma/rules --dsn "$SIGMA2SQL_PG_DSN" --clickhouse "$SIGMA2SQL_CH_URL"
           uv run python scripts/check_sigmahq.py /tmp/sigma/rules --dsn "$SIGMA2SQL_PG_DSN" --clickhouse "$SIGMA2SQL_CH_URL" --profile ecs-winlogbeat
-          uv run python scripts/check_sigmahq.py /tmp/sigma/rules --dsn "$SIGMA2SQL_PG_DSN" --clickhouse "$SIGMA2SQL_CH_URL" --profile evtx --samples /tmp/sigma
+          uv run python scripts/check_sigmahq.py /tmp/sigma/rules --dsn "$SIGMA2SQL_PG_DSN" --clickhouse "$SIGMA2SQL_CH_URL" --profile evtx --samples /tmp/sigma --require-all
       - name: Convert and execute SigmaHQ's other rule folders
         run: |
           for folder in rules-emerging-threats rules-threat-hunting rules-compliance rules-placeholder; do
             echo "== $folder"
-            uv run python scripts/check_sigmahq.py "/tmp/sigma/$folder" --dsn "$SIGMA2SQL_PG_DSN" --clickhouse "$SIGMA2SQL_CH_URL" --profile evtx --samples /tmp/sigma --placeholders any
+            uv run python scripts/check_sigmahq.py "/tmp/sigma/$folder" --dsn "$SIGMA2SQL_PG_DSN" --clickhouse "$SIGMA2SQL_CH_URL" --profile evtx --samples /tmp/sigma --placeholders any --require-all
           done
       - name: Convert and execute SigmaHQ's count() rules (kept in unsupported/ and deprecated/)
         run: |

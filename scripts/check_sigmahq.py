@@ -34,6 +34,9 @@ from sigma2sql.runner import connect as sqlite_connect
 class AnyPlaceholder(dict[str, tuple[Any, ...]]):
     """Gives every placeholder a value, to test rules that wait for the user's values."""
 
+    def __bool__(self) -> bool:
+        return True
+
     def __contains__(self, key: object) -> bool:
         return True
 
@@ -66,6 +69,7 @@ def main(
     profile: str | None,
     placeholders: str | None,
     samples: str | None,
+    require_all: bool = False,
 ) -> int:
     events: list[str] = []
     if samples:
@@ -125,6 +129,11 @@ def main(
     for failure in failures:
         print(failure, file=sys.stderr)
     print(f"{len(failures)} queries rejected by the database")
+    # PostgreSQL may refuse a few regexes; the others have to take every rule.
+    missing = [d for d, count in converted.items() if d != "postgres" and count < len(files)]
+    if require_all and missing:
+        print(f"not every rule converted on: {', '.join(missing)}", file=sys.stderr)
+        return 1
     return 1 if failures else 0
 
 
@@ -136,7 +145,18 @@ if __name__ == "__main__":
     parser.add_argument("--profile", help="built-in profile name or YAML file")
     parser.add_argument("--placeholders", help="YAML file of values, or `any` for a dummy value")
     parser.add_argument("--samples", help="SigmaHQ checkout: run over its regression events")
+    parser.add_argument(
+        "--require-all", action="store_true", help="fail unless every rule converts"
+    )
     args = parser.parse_args()
     sys.exit(
-        main(args.rules, args.dsn, args.clickhouse, args.profile, args.placeholders, args.samples)
+        main(
+            args.rules,
+            args.dsn,
+            args.clickhouse,
+            args.profile,
+            args.placeholders,
+            args.samples,
+            args.require_all,
+        )
     )
