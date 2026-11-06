@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypeGuard
 
@@ -223,6 +223,14 @@ class Renderer:
             if isinstance(templates, str):
                 templates = (templates,)
             name = _expand(templates, sigma_field) if templates else sigma_field
+        return self._located(name)
+
+    def time_column(self) -> str:
+        """The event time is a place in the event, not a Sigma field: `default_field` says
+        where a rule's fields are kept, and applying it here would point at nothing."""
+        return self._located(self.t.mapping.get(self.t.timestamp, self.t.timestamp))
+
+    def _located(self, name: str | Sequence[str]) -> str:
         if not isinstance(name, str):
             if len(name) == 1:
                 return self.path(name[0])
@@ -272,7 +280,7 @@ class Renderer:
 
     def epoch(self, col: str | None = None) -> str:
         """Seconds since 1970 of a time column, by default the configured timestamp field."""
-        col = col or self.column(self.t.timestamp)
+        col = col or self.time_column()
         fmt = self.t.timestamp_format
         if fmt != "iso":
             seconds = self.cast_number(col)

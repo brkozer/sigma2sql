@@ -89,9 +89,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"sigma2sql: {exc}", file=sys.stderr)
         return 2
-    if args.command == "hunt" and not args.profile and any(_is_evtx(p) for p in args.logs):
-        # EVTX events have one known layout, so the right profile needs no asking.
-        target = apply_profile(target, load_profile("evtx"))
     if args.command == "convert":
         return _convert(args.paths, target)
     if args.command == "hunt":
@@ -129,8 +126,12 @@ def _target(args: argparse.Namespace) -> Target:
         json_column=getattr(args, "json_column", None),
         keyword_column=getattr(args, "keyword_column", None),
     )
-    if args.profile:
-        target = apply_profile(target, load_profile(args.profile))
+    profile = args.profile
+    if args.command == "hunt" and not profile and any(_is_evtx(p) for p in args.logs):
+        # EVTX events have one known layout, so the right profile needs no asking.
+        profile = "evtx"
+    if profile:
+        target = apply_profile(target, load_profile(profile))
     if args.placeholders:
         target = replace(target, placeholders=load_placeholders(args.placeholders))
     if args.nested:

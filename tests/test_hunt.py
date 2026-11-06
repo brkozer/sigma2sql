@@ -119,6 +119,42 @@ def test_hunt_reads_evtx_with_the_evtx_profile(
     assert fake_evtx == [str(tmp_path / "a.evtx")]
 
 
+def test_timestamp_field_is_kept_with_the_automatic_profile(
+    tmp_path: Path, fake_evtx: list[str]
+) -> None:
+    from sigma2sql.cli import _target, argparse
+
+    args = argparse.Namespace(
+        command="hunt",
+        logs=["a.evtx"],
+        mapping=None,
+        profile=None,
+        placeholders=None,
+        nested=False,
+        timestamp_field="when",
+        timestamp_format=None,
+    )
+    assert _target(args).timestamp == "when"
+    assert _target(argparse.Namespace(**{**vars(args), "timestamp_field": None})).nested
+
+
+def test_a_time_without_a_zone_is_utc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("TZ", "Europe/Istanbul")
+    rules = tmp_path / "r.yml"
+    rules.write_text(
+        "title: base\nname: base\ndetection: {s: {A: 1}, condition: s}\n---\n"
+        "title: c\ncorrelation: {type: event_count, rules: [base], timespan: 5m,"
+        " condition: {gte: 1}}\n"
+    )
+    logs = tmp_path / "e.jsonl"
+    logs.write_text('{"A": 1, "timestamp": "2026-11-01 03:12:01"}\n')
+    assert main(["hunt", str(rules), "--logs", str(logs), "--format", "json", "-e", "1"]) == 0
+    example = json.loads(capsys.readouterr().out)[0]["examples"][0]
+    assert example["window_end"].startswith("2026-11-01 03:12:01")
+
+
 def test_hunt_expands_evtx_globs(
     tmp_path: Path, fake_evtx: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -11,6 +11,7 @@ import pytest
 
 from clickhouse import clickhouse_rows
 from sigma2sql import Collection, Correlation, RuleError, Target, correlation_query, load_documents
+from sigma2sql.profile import apply_profile, load_profile
 from sigma2sql.rule import Rule
 from sigma2sql.runner import rows, target
 from sigma2sql.sql import to_query
@@ -261,24 +262,34 @@ def _normalise(found: list[dict[str, Any]], groups: list[str]) -> list[tuple[Any
     return sorted(out, key=repr)
 
 
-def run_sqlite(text: str, events: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
-    sql, groups = _sql(text, target())
+def _with(tgt: Target, profile: str | None) -> Target:
+    return apply_profile(tgt, load_profile(profile)) if profile else tgt
+
+
+def run_sqlite(
+    text: str, events: list[dict[str, Any]], profile: str | None = None
+) -> list[tuple[Any, ...]]:
+    sql, groups = _sql(text, _with(target(), profile))
     return _normalise(rows(sql, events), groups)
 
 
-def run_duckdb(text: str, events: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+def run_duckdb(
+    text: str, events: list[dict[str, Any]], profile: str | None = None
+) -> list[tuple[Any, ...]]:
     pytest.importorskip("duckdb")
     from sigma2sql.hunt import connect
 
     con = connect()
     con.executemany("INSERT INTO events VALUES (?)", [(json.dumps(e),) for e in events])
-    sql, groups = _sql(text, Target("duckdb", json_column="data"))
+    sql, groups = _sql(text, _with(Target("duckdb", json_column="data"), profile))
     cur = con.execute(sql)
     names = [d[0] for d in cur.description]
     return _normalise([dict(zip(names, r, strict=True)) for r in cur.fetchall()], groups)
 
 
-def run_postgres(text: str, events: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+def run_postgres(
+    text: str, events: list[dict[str, Any]], profile: str | None = None
+) -> list[tuple[Any, ...]]:
     dsn = os.environ.get("SIGMA2SQL_PG_DSN")
     if not dsn:
         pytest.skip("SIGMA2SQL_PG_DSN not set")
@@ -288,15 +299,17 @@ def run_postgres(text: str, events: list[dict[str, Any]]) -> list[tuple[Any, ...
         cur.execute("CREATE TEMP TABLE events (data jsonb)")
         for e in events:
             cur.execute("INSERT INTO events VALUES (%s)", (json.dumps(e),))
-        sql, groups = _sql(text, Target("postgres", json_column="data"))
+        sql, groups = _sql(text, _with(Target("postgres", json_column="data"), profile))
         cur.execute(sql.replace("%", "%%"))
         assert cur.description is not None
         names = [d.name for d in cur.description]
         return _normalise([dict(zip(names, r, strict=True)) for r in cur.fetchall()], groups)
 
 
-def run_clickhouse(text: str, events: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
-    sql, groups = _sql(text, Target("clickhouse", json_column="data"))
+def run_clickhouse(
+    text: str, events: list[dict[str, Any]], profile: str | None = None
+) -> list[tuple[Any, ...]]:
+    sql, groups = _sql(text, _with(Target("clickhouse", json_column="data"), profile))
     return _normalise(clickhouse_rows(sql, events), groups)
 
 
@@ -312,6 +325,54 @@ def test_case(
     expected: list[tuple[Any, ...]],
 ) -> None:
     assert engine(text, events) == sorted(expected, key=repr)
+
+
+BRUTE_FORCE = (
+    FAILED_LOGON
+    + """---
+title: Brute force
+correlation:
+  type: event_count
+  rules: [failed_logon]
+  group-by: [TargetUserName]
+  timespan: 5m
+  condition: {gte: 3}
+"""
+)
+
+
+def evtx_event(minute: int) -> dict[str, Any]:
+    system = {"EventID": 4625, "TimeCreated": {"#attributes": {"SystemTime": t(minute)}}}
+    return {"Event": {"System": system, "EventData": {"TargetUserName": "admin"}}}
+
+
+def ecs_event(minute: int) -> dict[str, Any]:
+    return {
+        "@timestamp": t(minute),
+        "event": {"code": "4625"},
+        "winlog": {"event_data": {"TargetUserName": "admin"}},
+    }
+
+
+@pytest.mark.parametrize(
+    "run", [run_sqlite, run_duckdb, run_postgres, run_clickhouse], ids=lambda r: r.__name__[4:]
+)
+@pytest.mark.parametrize(
+    ("profile", "event"), [("evtx", evtx_event), ("ecs-winlogbeat", ecs_event)]
+)
+def test_time_window_with_a_profile(
+    run: Callable[..., list[tuple[Any, ...]]],
+    profile: str,
+    event: Callable[[int], dict[str, Any]],
+) -> None:
+    """These profiles have a `default_field`, which must not move the time field."""
+    assert run(BRUTE_FORCE, [event(0), event(1), event(2)], profile) == [("admin", 3)]
+    assert run(BRUTE_FORCE, [event(0), event(10), event(20)], profile) == []
+
+
+def test_mapping_can_move_the_time_field() -> None:
+    tgt = Target("duckdb", json_column="data", mapping={"timestamp": "when"})
+    assert "$.when" in _sql(BRUTE_FORCE, tgt)[0].replace('"', "")
 
 
 def test_epoch_timestamps() -> None:

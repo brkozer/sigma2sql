@@ -56,6 +56,8 @@ def connect() -> Any:
     except ImportError as exc:  # pragma: no cover - depends on the install
         raise SystemExit("sigma2sql hunt needs DuckDB: pip install 'sigma2sql[duckdb]'") from exc
     con = duckdb.connect()
+    # A time without a zone must mean the same on every machine, as it does in `test`.
+    con.execute("SET TimeZone = 'UTC'")
     con.create_function("cidr_match", _cidr_match, ["VARCHAR", "VARCHAR"], "BOOLEAN")
     con.execute(f"CREATE TABLE {TABLE} ({COLUMN} JSON)")
     return con
