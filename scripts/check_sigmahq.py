@@ -31,6 +31,16 @@ from sigma2sql.profile import apply_profile, load_placeholders, load_profile
 from sigma2sql.runner import connect as sqlite_connect
 
 
+class AnyPlaceholder(dict[str, tuple[Any, ...]]):
+    """Gives every placeholder a value, to test rules that wait for the user's values."""
+
+    def __contains__(self, key: object) -> bool:
+        return True
+
+    def __missing__(self, key: str) -> tuple[Any, ...]:
+        return ("example",)
+
+
 def clickhouse_runner(url: str, events: list[str]) -> Callable[[str], Any]:
     def run(query: str) -> bytes:
         # The largest SigmaHQ rule, a list of driver hashes, exceeds the 256 KiB default.
@@ -63,7 +73,9 @@ def main(
             events += [json.dumps(e) for e in read_events(sample)]
         print(f"{len(events)} sample events loaded")
     base = Target(json_column="data")
-    if placeholders:
+    if placeholders == "any":
+        base = replace(base, placeholders=AnyPlaceholder())
+    elif placeholders:
         base = replace(base, placeholders=load_placeholders(Path(placeholders)))
     if profile:
         base = apply_profile(base, load_profile(profile))
@@ -122,7 +134,7 @@ if __name__ == "__main__":
     parser.add_argument("--dsn", help="PostgreSQL connection string")
     parser.add_argument("--clickhouse", help="ClickHouse HTTP URL")
     parser.add_argument("--profile", help="built-in profile name or YAML file")
-    parser.add_argument("--placeholders", help="YAML map of placeholder values")
+    parser.add_argument("--placeholders", help="YAML file of values, or `any` for a dummy value")
     parser.add_argument("--samples", help="SigmaHQ checkout: run over its regression events")
     args = parser.parse_args()
     sys.exit(
