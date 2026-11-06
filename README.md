@@ -5,19 +5,22 @@
 ![python](https://img.shields.io/badge/python-3.12%2B-3776AB)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
-Run [Sigma](https://sigmahq.io) detection rules as SQL on **SQLite**, **PostgreSQL** and
-**DuckDB**: hunt through log files without a SIEM, convert rules for the database your logs
-already live in, and unit-test rules before they reach production.
+Run [Sigma](https://sigmahq.io) detection rules as SQL on **SQLite**, **PostgreSQL**,
+**DuckDB** and **ClickHouse**: hunt through log files, `.evtx` included, without a SIEM,
+convert rules for the database your logs already live in, and unit-test rules before they
+reach production.
 
-- **Every SigmaHQ rule converts**: 3162 / 3162 on SQLite and DuckDB, 3160 / 3162 on
-  PostgreSQL, plus all 45 `count()` aggregation rules SigmaHQ keeps under `unsupported/`.
-  Every generated query is executed on all three databases in CI each week.
-- **Checked against real events**: all 476 of SigmaHQ's regression samples match as expected,
-  and on those events sigma2sql agrees with pySigma on 3074 of 3076 rules; the two
-  differences are IPv6 addresses pySigma's text matching misses
-  ([details](docs/correctness.md)).
-- **Correlations**: event counts, distinct counts, sums and temporal sequences over a sliding
-  window, as plain SQL.
+- **All of SigmaHQ converts**: the 3807 rules in its five rule folders on SQLite, DuckDB and
+  ClickHouse, 3804 on PostgreSQL, plus all 45 `count()` aggregation rules SigmaHQ keeps under
+  `unsupported/`. 27 of the 3807 use placeholders and need your values
+  ([details](#placeholders)). Every generated query is executed on all four databases in CI
+  each week.
+- **Checked against real events**: all 477 of SigmaHQ's regression samples match as expected
+  on all four databases and straight from the original `.evtx` files, and on those events
+  sigma2sql agrees with pySigma on 3076 of 3078 rules; the two differences are IPv6 addresses
+  pySigma's text matching misses ([details](docs/correctness.md)).
+- **Correlations**: event counts, distinct counts, sums, averages, percentiles and temporal
+  sequences over a sliding window, as plain SQL.
 - **Your schema**: profiles map Sigma fields to your columns or nested JSON (Sysmon, EVTX
   exports, Elastic/Winlogbeat ECS, OCSF built in) and limit each rule to the right log source.
 
@@ -26,22 +29,23 @@ already live in, and unit-test rules before they reach production.
 ## Install
 
 ```bash
-pip install "sigma2sql[duckdb]"
+pip install "sigma2sql[duckdb,evtx]"
 # or as a standalone tool
-uv tool install "sigma2sql[duckdb]"
+uv tool install "sigma2sql[duckdb,evtx]"
 ```
 
-The `duckdb` extra is needed for `hunt`; `convert`, `test` and `check` only need PyYAML.
+The `duckdb` extra is needed for `hunt` and `evtx` for reading `.evtx` files; `convert`, `test`
+and `check` only need PyYAML.
 
 ## Hunt through log files
 
 ```bash
 git clone --depth 1 https://github.com/SigmaHQ/sigma
-sigma2sql hunt sigma/rules --logs 'logs/*.json' --profile evtx --examples 1
+sigma2sql hunt sigma/rules --logs 'logs/*.evtx' --examples 1
 ```
 
-`hunt` loads JSON, JSON Lines, Parquet or CSV files into an in-memory DuckDB database, runs
-every rule and correlation, and lists the ones that matched, most severe first. On the
+`hunt` loads EVTX, JSON, JSON Lines, Parquet or CSV files into an in-memory DuckDB database,
+runs every rule and correlation, and lists the ones that matched, most severe first. On the
 examples in this repository:
 
 ```console
@@ -56,8 +60,13 @@ medium           1  Successful RDP logon from a public address  (examples/rules/
 
 `--examples N` prints matching events (or correlation results such as
 `{"TargetUserName":"admin","window_start":"2026-11-01 03:12:01","window_end":"2026-11-01 03:12:17","value":3}`),
-`--format json` gives a machine-readable report and `--fail-on high` a non-zero exit code
-when a rule at that level or above fires.
+`--format json` gives a machine-readable report, `--sarif FILE` also writes a SARIF report
+for code scanning, and `--fail-on high` a non-zero exit code when a rule at that level or
+above fires.
+
+`.evtx` files use the `evtx` profile unless you pass another one. Logs from an incident are
+often damaged, so everything readable is kept and the rest is reported: a cut-off file or a
+bad chunk gives a warning, and only a hunt that could read no event at all is an error.
 
 ## Convert rules
 
@@ -75,12 +84,13 @@ with the reason, and the command exits non-zero.
 
 | Option | Meaning |
 | --- | --- |
-| `-d, --dialect` | `sqlite` (default), `postgres` or `duckdb` |
+| `-d, --dialect` | `sqlite` (default), `postgres`, `duckdb` or `clickhouse` |
 | `-t, --table` | table name, `schema.table` allowed (default `events`) |
 | `--json-column` | read fields from this JSON / JSONB column |
 | `--keyword-column` | column searched by keyword rules (in JSON mode the whole document) |
 | `-p, --profile` | built-in profile or a YAML file (see below) |
 | `-m, --mapping` | YAML map from Sigma field to your column or key, applied over the profile |
+| `--placeholders` | YAML file with the values of `%name%` placeholders (see below) |
 | `--nested` | dotted names are paths into nested JSON |
 | `--timestamp-field`, `--timestamp-format` | event time for correlations (`iso`, `epoch_s`, `epoch_ms`) |
 
@@ -88,13 +98,14 @@ with the reason, and the command exits non-zero.
 
 Sigma correlation rules and the older `| count() by ... > N` syntax both become SQL. With a
 `timespan`, each event closes a window over the events of the same group before it; the
-window's events are found with a self-join, which works the same on all three databases and
+window's events are found with a self-join, which works the same on every database and
 allows distinct counts:
 
 ```yaml
 title: Brute force against one account
 correlation:
-  type: event_count          # also value_count, value_sum, value_avg, temporal
+  type: event_count          # also value_count, value_sum, value_avg, value_median,
+                             # value_percentile, temporal
   rules: [failed_logon]
   group-by: [TargetUserName]
   timespan: 5m
@@ -104,6 +115,44 @@ correlation:
 Each result row holds the group values, the window's start and end and the counted value.
 Rules referenced by a correlation are not reported on their own unless it sets
 `generate: true`. `temporal_ordered` is not supported yet.
+
+## Placeholders
+
+Rules with the `expand` modifier leave a value for you to fill in, such as your domain
+controllers. Give the values in a YAML file; a list means any of them:
+
+```yaml
+dc_ip_addresses: [10.0.0.10, 10.0.0.11]
+Workstations: "WS-*"
+```
+
+```bash
+sigma2sql convert rules/ --placeholders values.yml
+```
+
+A rule with a placeholder you did not provide is skipped and named on stderr, rather than
+converted into something that never matches or always does.
+
+## Filters
+
+[Sigma filters](https://sigmahq.io/docs/meta/filters.html) keep your exceptions out of the
+rules, so rules can be updated without losing them. Pass filter files along with the rules;
+`hunt` and `convert` apply them, and a filter that reaches no rule gives a warning:
+
+```yaml
+title: Not on build servers
+logsource: {product: windows, category: process_creation}
+filter:
+  rules: [5f4b9d6e-5a3f-4c8c-9d1e-2b7a8c6e1f30]    # ids or names, or `any`
+  build: {Computer|startswith: build-}
+  condition: not build
+```
+
+```bash
+sigma2sql hunt rules/ filters/ --logs 'logs/*.evtx'
+```
+
+`check` and `test` run a rule on its own, without filters.
 
 ## Profiles
 
@@ -170,6 +219,7 @@ The same check as a GitHub Action:
     path: rules
     profile: sysmon          # optional
     require-tests: "true"    # optional
+    sarif: rules.sarif       # optional, for github/codeql-action/upload-sarif
 ```
 
 `sigma2sql test RULE EVENTS.jsonl` prints the events (or correlation results) a single rule
@@ -177,24 +227,31 @@ produces.
 
 ## Supported Sigma features
 
-| Feature | SQLite | PostgreSQL | DuckDB |
-| --- | --- | --- | --- |
-| maps, lists, keywords (with `all`, `re` and string modifiers) | ✓ | ✓ | ✓ |
-| `and`, `or`, `not`, `1 of x*`, `all of x*`, `them`, condition lists | ✓ | ✓ | ✓ |
-| wildcards and escapes, `contains`, `startswith`, `endswith`, `all`, `cased`, `windash` | ✓ | ✓ | ✓ |
-| `base64`, `base64offset`, `utf16`, `utf16le`, `utf16be`, `wide` | ✓ | ✓ | ✓ |
-| `re`, `re\|i` | `REGEXP` ¹ | `~` ² | `regexp_matches` ³ |
-| `cidr` (IPv4 and IPv6, any notation) | `cidr_match()` ¹ | `inet <<=` | `cidr_match()` ¹ |
-| `lt`, `lte`, `gt`, `gte`, `exists`, `fieldref`, `null` | ✓ | ✓ | ✓ |
-| correlations, `count()` aggregations | ✓ | ✓ | ✓ |
-| `expand` (placeholders), `temporal_ordered`, filter rules | – | – | – |
+| Feature | SQLite | PostgreSQL | DuckDB | ClickHouse |
+| --- | --- | --- | --- | --- |
+| maps, lists, keywords (with `all`, `re` and string modifiers) | ✓ | ✓ | ✓ | ✓ |
+| `and`, `or`, `not`, `1 of x*`, `all of x*`, `them`, condition lists | ✓ | ✓ | ✓ | ✓ |
+| wildcards and escapes, `contains`, `startswith`, `endswith`, `all`, `cased`, `windash`, `neq` | ✓ | ✓ | ✓ | ✓ |
+| `base64`, `base64offset`, `utf16`, `utf16le`, `utf16be`, `wide` | ✓ | ✓ | ✓ | ✓ |
+| `re` with `i`, `m`, `s` | `REGEXP` ¹ | `~` ² | `regexp_matches` ³ | `match` ³ |
+| `cidr` (IPv4 and IPv6, any notation) | `cidr_match()` ¹ | `inet <<=` | `cidr_match()` ¹ | `isIPAddressInRange` |
+| `lt`, `lte`, `gt`, `gte`, `exists`, `fieldref`, `null` | ✓ | ✓ | ✓ | ✓ ⁴ |
+| `minute`, `hour`, `day`, `week`, `month`, `year` (UTC, ISO weeks) | ✓ | ✓ | ✓ | ✓ |
+| `expand` placeholders, filters | ✓ | ✓ | ✓ | ✓ |
+| correlations, `count()` aggregations | ✓ ¹ | ✓ | ✓ | ✓ ⁵ |
+| `temporal_ordered`, `temporal` with a boolean condition | – | – | – | – |
 
 ¹ Not built into the database. `hunt`, `test` and `check` register them; when you run the SQL
-elsewhere, register `regexp(pattern, value)` and `cidr_match(value, network)` yourself
-(`sigma2sql.runner.connect()` returns a SQLite connection with both).<br>
-² PostgreSQL rejects repetition counts above 255; those two rules are reported as unsupported
-rather than silently changed.<br>
-³ RE2: no lookaround or backreferences; such rules are reported as unsupported on DuckDB.
+elsewhere, register `regexp(pattern, value)`, `cidr_match(value, network)` and, for
+percentiles, the aggregate `sigma_percentile(value, fraction)` yourself
+(`sigma2sql.runner.connect()` returns a SQLite connection with all three).<br>
+² PostgreSQL rejects repetition counts above 255; those three rules are reported as
+unsupported rather than silently changed. Without `s`, `.` still matches a newline there.<br>
+³ RE2: no lookaround or backreferences; such rules are reported as unsupported.<br>
+⁴ Without `--json-column`, a missing value is only NULL in `Nullable` columns.<br>
+⁵ Tested on ClickHouse 25.8. Correlations with `group-by` need `IS NOT DISTINCT FROM` in
+`JOIN ON`. One SigmaHQ rule, a list of driver hashes, is larger than the default
+`max_query_size` of 256 KiB and needs that setting raised.
 
 Matching is case-insensitive by default (ASCII in SQLite, as its `LIKE` and `NOCASE` are);
 values in a JSON column match whether they are stored as `4624` or `"4624"`, and `not` on a
@@ -210,7 +267,7 @@ flowchart LR
     C --> E[match tree]
     D --> E
     P[profile<br/>fields, logsources,<br/>timestamp] --> R
-    E --> R[renderer<br/>SQLite · PostgreSQL · DuckDB]
+    E --> R[renderer<br/>SQLite · PostgreSQL · DuckDB · ClickHouse]
     R --> Q[SQL]
     R --> K[correlation SQL<br/>self-join windows]
     Q --> H[hunt / test / check]
@@ -236,14 +293,15 @@ print(to_query(rule, target))
 uv sync
 uv run pytest                                               # SQLite and DuckDB
 SIGMA2SQL_PG_DSN=postgresql://postgres:test@localhost/postgres uv run pytest   # + PostgreSQL
-uv run python scripts/check_sigmahq.py sigma/rules --dsn ... [--profile evtx]
-uv run python scripts/check_regression.py sigma
+SIGMA2SQL_CH_URL=http://localhost:8123/ uv run pytest                          # + ClickHouse
+uv run python scripts/check_sigmahq.py sigma/rules --dsn ... --clickhouse ... [--profile evtx]
+uv run python scripts/check_regression.py sigma --clickhouse ... --evtx
 uv run --with pysigma --with pysigma-backend-sqlite python scripts/diff_pysigma.py sigma
 uv run python scripts/demo_svg.py docs/demo.svg
 ```
 
 The behaviour tests in `tests/cases.py` and `tests/test_correlation.py` run unchanged on all
-three databases. The example rules and events in `examples/` were written for this project.
+four databases. The example rules and events in `examples/` were written for this project.
 
 ## License
 

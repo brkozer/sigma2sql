@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- ClickHouse dialect, tested on a real server: all SigmaHQ rules run, and the regression
+  samples give the same results as on the other databases.
+- `hunt` reads `.evtx` files directly (`pip install "sigma2sql[evtx]"`). Damaged logs are read
+  as far as possible, with a warning for what was lost.
+- `expand` modifier: `--placeholders` fills in `%name%` values.
+- Sigma filters, applied by `convert` and `hunt` with the same rules as pySigma.
+- `--sarif FILE` for `hunt` and `check`, and a `sarif` input for the GitHub Action.
+- Modifiers `neq`, `re|m`, `re|s` (and the long names `ignorecase`, `multiline`, `dotall`),
+  `minute`, `hour`, `day`, `week`, `month`, `year`.
+- Correlations `value_median` and `value_percentile`.
+- `i`, `m` and `s` without `re` are now an error instead of being ignored.
+- Coverage is now measured on all five SigmaHQ rule folders, not only `rules/`: 3807/3807 on
+  SQLite, DuckDB and ClickHouse, 3804/3807 on PostgreSQL. The README used to say "every
+  SigmaHQ rule" for `rules/` alone, where 27 placeholder rules elsewhere did not convert.
+
 ## 0.2.0 (2026-11-05)
 
 - `hunt`: run a rule directory over JSON, JSON Lines, Parquet or CSV logs with DuckDB, no

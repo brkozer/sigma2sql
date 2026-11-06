@@ -3,7 +3,7 @@
     uv run --with pysigma --with pysigma-backend-sqlite \\
         python scripts/diff_pysigma.py path/to/sigma [--show N]
 
-Every SigmaHQ regression sample (476 real Windows events) is flattened into one SQLite
+Every SigmaHQ regression sample (real Windows events) is flattened into one SQLite
 table. Every rule under `rules/` is then converted by both tools and run on that table,
 and the sets of matching events are compared. Each rule sees every event, so this checks
 non-matches as well as matches.
