@@ -271,7 +271,7 @@ Each window that meets the condition gives a row, so a long burst gives one row 
 distinct event time from the point where the threshold is reached. Events without a usable time
 do not close a window, see [Event time](correlations.md#event-time). Without a timespan the
 query is a plain `GROUP BY` over `base`, and the row has `first_seen` and `last_seen` in place
-of the window's start and end.
+of the window's start and end. `temporal_ordered` takes neither path.
 
 The aggregate depends on the correlation type:
 
@@ -281,10 +281,41 @@ The aggregate depends on the correlation type:
 | `value_count` | `COUNT(DISTINCT value)` |
 | `value_sum`, `value_avg` | `SUM` or `AVG` of the value as a number |
 | `value_median`, `value_percentile` | the dialect's percentile function |
-| `temporal` | `COUNT(DISTINCT rule)`, by default at least the number of rules |
+| `temporal` | `COUNT(DISTINCT rule)`, by default at least the number of different entries in `rules` |
+| `temporal_ordered` | none, see below |
 
-`temporal` asks whether all the rules fired inside the window, in any order. `temporal_ordered`
-is not supported in this version, and such a file is reported as unsupported.
+`temporal` asks whether all the rules fired inside the window, in any order.
+
+`temporal_ordered` is built by `_ordered`, with or without a timespan, and it uses neither
+`windows` nor a `HAVING`. It has one CTE per step, each built on the one before it:
+
+```console
+$ sigma2sql convert there_and_back.yml
+-- Recon, a new service, recon again
+WITH base AS (
+  SELECT 'recon' AS sigma_rule, unixepoch("timestamp", 'subsec') AS sigma_ts, "Host" AS "g0" FROM "events" WHERE "Image" LIKE '%\\whoami.exe' ESCAPE '\'
+  UNION ALL
+  SELECT 'new_service' AS sigma_rule, unixepoch("timestamp", 'subsec') AS sigma_ts, "Host" AS "g0" FROM "events" WHERE "EventID" = 7045
+),
+s0 AS (SELECT DISTINCT "g0", sigma_ts AS t0 FROM base WHERE sigma_rule = 'recon' AND sigma_ts IS NOT NULL),
+s1 AS (SELECT p."g0" AS "g0", p.t0 AS t0, MIN(e.sigma_ts) AS t1 FROM s0 p JOIN base e ON e.sigma_rule = 'new_service' AND e."g0" IS p."g0" AND e.sigma_ts >= p.t0 AND e.sigma_ts <= p.t0 + 600 GROUP BY p."g0", p.t0),
+s2 AS (SELECT p."g0" AS "g0", p.t0 AS t0, p.t1 AS t1, MIN(e.sigma_ts) AS t2 FROM s1 p JOIN base e ON e.sigma_rule = 'recon' AND e."g0" IS p."g0" AND e.sigma_ts >= p.t1 AND e.sigma_ts > p.t0 AND e.sigma_ts <= p.t0 + 600 GROUP BY p."g0", p.t0, p.t1)
+SELECT "g0" AS "Host", datetime(t0, 'unixepoch', 'subsec') AS window_start, datetime(t2, 'unixepoch', 'subsec') AS window_end, 3 AS value
+FROM s2;
+
+```
+
+`s0` holds the start times of each group, without events that have no time, and `DISTINCT`
+makes that one row per start time. Each later CTE compares a step with the one before it, using
+`>=`, because logs often only have whole seconds. A rule that comes back also needs `>` against
+its last earlier step, adjacent or not, as `e.sigma_ts > p.t0` does in `s2`, or one event would
+fill both. The upper limit is always `p.t0` plus the timespan, and it is left out without one.
+`MIN` with the `GROUP BY` keeps only the earliest event of the step, which can do no worse than
+a later one, so each CTE has one row per start however dense the events are. The last `SELECT`
+reads the last CTE: `t0` gives `window_start`, the last time gives `window_end`, and `value` is
+the number of steps. `base` has one branch per different rule, so `recon` is read once here
+although it is listed twice.
+[Correlations](correlations.md#temporal_ordered) shows what this means for the results.
 
 ## Why it works this way
 

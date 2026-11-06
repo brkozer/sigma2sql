@@ -74,8 +74,8 @@ in CI each week.
 
 ## Limits
 
-- `temporal_ordered` correlations are not supported. `temporal` is, but not with a boolean
-  condition. See [Supported features](features.md).
+- `temporal` correlations cannot have a boolean condition. See
+  [Supported features](features.md).
 - A rule that cannot be converted is skipped and named on stderr. A few modifier combinations
   are [ignored without a report](features.md#how-it-is-reported).
 - `hunt` uses DuckDB, so RE2 applies there: patterns with lookaround or backreferences are

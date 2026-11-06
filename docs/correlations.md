@@ -40,7 +40,7 @@ Brute force against one account: 1 results
 ```
 
 The same file works with [`convert`](convert.md), [`hunt`](hunt.md), `test` and
-[`check`](testing.md). `temporal_ordered` is [not supported](#not-supported) in this version.
+[`check`](testing.md). What is left out is listed under [Not supported](#not-supported).
 
 ## Correlation keys
 
@@ -53,7 +53,7 @@ of the document, as in any rule.
 | `rules` | yes | names or ids of the rules to count; a single string is allowed |
 | `group-by` | no | fields that split the count; a single string is allowed |
 | `timespan` | no | length of the [window](#windows), such as `5m`; without it there is no window |
-| `condition` | yes, except for `temporal` | a [threshold](#conditions) on the result |
+| `condition` | yes, except for `temporal` and `temporal_ordered` | a [threshold](#conditions) on the result |
 | `aliases` | no | a different [field per rule](#aliases) for a `group-by` name |
 | `generate` | no | also report the [referenced rules](#generate) on their own |
 
@@ -68,6 +68,7 @@ of the document, as in any rule.
 | `value_median` | median of a field | `field` |
 | `value_percentile` | a percentile of a field | `field`, `percentile` from 0 to 100 |
 | `temporal` | number of different rules that matched | |
+| `temporal_ordered` | number of steps, the length of `rules` | |
 
 `field` goes inside `condition`, as the Sigma specification has it. A `field` key directly
 under `correlation` is read too. A `value_*` correlation without either is skipped.
@@ -244,8 +245,284 @@ Recon and a new service on one host: 1 results
 ```
 
 `ws2` only matched one rule. `ws3` matched both, an hour apart. The default condition is `gte`
-the number of rules; write your own numeric `condition` to ask for fewer. `value` is the count
-of different rules in the window.
+the number of different entries in `rules`; write your own numeric `condition` to ask for
+fewer. `value` is the count of different rules in the window.
+
+### temporal_ordered
+
+`temporal_ordered` asks whether the listed rules matched in the order of the list, within the
+window. Each rule in `rules` is one step of a sequence:
+
+```yaml
+title: Recon command
+name: recon
+logsource: {product: windows, category: process_creation}
+detection:
+  selection:
+    Image|endswith: '\whoami.exe'
+  condition: selection
+---
+title: New service
+name: new_service
+logsource: {product: windows, service: system}
+detection:
+  selection:
+    EventID: 7045
+  condition: selection
+---
+title: Recon, then a new service on one host
+correlation:
+  type: temporal_ordered
+  rules: [recon, new_service]
+  group-by: [Host]
+  timespan: 10m
+level: high
+```
+
+```json
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:00:00Z"}
+{"EventID": 7045, "Host": "ws1", "timestamp": "2026-11-01T10:04:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:20:00Z"}
+{"EventID": 7045, "Host": "ws1", "timestamp": "2026-11-01T10:21:00Z"}
+{"EventID": 7045, "Host": "ws2", "timestamp": "2026-11-01T10:00:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws2", "timestamp": "2026-11-01T10:04:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws3", "timestamp": "2026-11-01T10:00:00Z"}
+{"EventID": 7045, "Host": "ws3", "timestamp": "2026-11-01T11:00:00Z"}
+```
+
+```console
+$ sigma2sql test sequence.yml sequence.jsonl
+{"Host": "ws1", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 10:04:00.000", "value": 2}
+{"Host": "ws1", "window_start": "2026-11-01 10:20:00.000", "window_end": "2026-11-01 10:21:00.000", "value": 2}
+Recon, then a new service on one host: 2 results
+```
+
+`ws1` shows the sequence twice, and each time has its own row. `ws2` has both events in the
+wrong order, so it has no row, although a `temporal` correlation over these rules reports it.
+`ws3` has them in the right order, an hour apart.
+
+Every example in this section gives the same rows on all four databases. `group-by`, `aliases`
+and `generate` work as they do for the other types.
+
+Two things to know about sequences: `rules: [recon, recon]` gives no row for two events in the
+same second, see [below](#a-rule-following-itself), and a `timespan` is optional here, though
+the Sigma specification expects one.
+
+#### What a row means
+
+A row stands for one start of the sequence: an event of the first rule that the other rules
+followed in time.
+
+| Column | Meaning |
+| --- | --- |
+| one per `group-by` name | group value |
+| `window_start` | time of the start event |
+| `window_end` | the earliest time the last step was reached from that start |
+| `value` | number of steps, so it is the same in every row |
+
+All the steps have to match, so `condition` can be left out. A `gte` with the number of steps
+is accepted and changes nothing. Any other condition is [not supported](#not-supported).
+
+In `hunt`, the `HITS` column counts these rows:
+
+```console
+$ sigma2sql hunt sequence.yml --logs sequence.jsonl --examples 2
+LEVEL         HITS  RULE
+high             2  Recon, then a new service on one host  (sequence.yml)
+                      {"Host":"ws1","window_start":"2026-11-01 10:00:00","window_end":"2026-11-01 10:04:00","value":2}
+                      {"Host":"ws1","window_start":"2026-11-01 10:20:00","window_end":"2026-11-01 10:21:00","value":2}
+1 of 1 rules matched 8 events (0 rules skipped)
+```
+
+#### One row per start event
+
+Every start event that leads to a complete sequence gets a row, not only the first one of the
+group, so a repeated attack is reported each time. A start gets one row however many events
+complete it:
+
+```json
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:00:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:01:00Z"}
+{"EventID": 7045, "Host": "ws1", "timestamp": "2026-11-01T10:02:00Z"}
+{"EventID": 7045, "Host": "ws1", "timestamp": "2026-11-01T10:03:00Z"}
+```
+
+```console
+$ sigma2sql test sequence.yml starts.jsonl
+{"Host": "ws1", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 10:02:00.000", "value": 2}
+{"Host": "ws1", "window_start": "2026-11-01 10:01:00.000", "window_end": "2026-11-01 10:02:00.000", "value": 2}
+Recon, then a new service on one host: 2 results
+```
+
+Both `whoami` events start a sequence, so there are two rows. An event is not used up by a
+sequence: the service at 10:02 ends both, and the one at 10:03 adds no row.
+
+Rows are grouped on the time of the start. Two start events of one group with the same time
+therefore give one row:
+
+```json
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:00:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:00:00Z"}
+{"EventID": 7045, "Host": "ws1", "timestamp": "2026-11-01T10:02:00Z"}
+```
+
+```console
+$ sigma2sql test sequence.yml same_time.jsonl
+{"Host": "ws1", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 10:02:00.000", "value": 2}
+Recon, then a new service on one host: 1 results
+```
+
+#### Equal timestamps
+
+A step has to be no earlier than the step before it, so events with the same time count as in
+order. Many logs only have whole seconds, and two events of one second may have happened either
+way round. The order of the lines in the file has no effect:
+
+```json
+{"EventID": 7045, "Host": "ws1", "timestamp": "2026-11-01T10:00:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:00:00Z"}
+```
+
+```console
+$ sigma2sql test sequence.yml equal.jsonl
+{"Host": "ws1", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 10:00:00.000", "value": 2}
+Recon, then a new service on one host: 1 results
+```
+
+The exception is [a rule that comes back](#a-rule-following-itself). An event that matches two
+different rules can fill both their steps, as with `temporal`, see
+[several rules](#several-rules).
+
+#### A rule following itself
+
+A rule may be listed more than once. When it comes back, the step needs an event strictly later
+than the last earlier step of that rule, or every single event would be a sequence of its own:
+
+```yaml
+title: Recon command
+name: recon
+logsource: {product: windows, category: process_creation}
+detection:
+  selection:
+    Image|endswith: '\whoami.exe'
+  condition: selection
+---
+title: Recon twice on one host
+correlation:
+  type: temporal_ordered
+  rules: [recon, recon]
+  group-by: [Host]
+  timespan: 10m
+level: high
+```
+
+```json
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:00:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws2", "timestamp": "2026-11-01T10:00:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws2", "timestamp": "2026-11-01T10:00:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws3", "timestamp": "2026-11-01T10:00:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws3", "timestamp": "2026-11-01T10:03:00Z"}
+```
+
+```console
+$ sigma2sql test twice.yml twice.jsonl
+{"Host": "ws3", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 10:03:00.000", "value": 2}
+Recon twice on one host: 1 results
+```
+
+`ws1` has one event. `ws2` has two, but in the same second, and here equal times do not count.
+That is a known limit: the two events are not told apart from one event filling both steps.
+
+The earlier step does not have to be the neighbour in the list. With
+`rules: [recon, new_service, recon]`, the third step needs a later event than the first:
+
+```json
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:00:00Z"}
+{"EventID": 7045, "Host": "ws1", "timestamp": "2026-11-01T10:01:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:02:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws2", "timestamp": "2026-11-01T10:00:00Z"}
+{"EventID": 7045, "Host": "ws2", "timestamp": "2026-11-01T10:01:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws3", "timestamp": "2026-11-01T10:00:00Z"}
+{"EventID": 7045, "Host": "ws3", "timestamp": "2026-11-01T10:00:00Z"}
+```
+
+```console
+$ sigma2sql test there_and_back.yml there_and_back.jsonl
+{"Host": "ws1", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 10:02:00.000", "value": 3}
+Recon, a new service, recon again: 1 results
+```
+
+`ws1` has all three steps. `ws2` stops after the second. `ws3` has only two events, in the same
+second, and its one `whoami` event cannot fill both the first step and the third. Against the
+other steps equal times still count: with a service at 10:01, as on `ws1`, a `whoami` event at
+10:01 would complete the sequence.
+
+#### Timespan
+
+`timespan` is counted from the start event: every step must lie within that time after it, both
+ends included. The other types look back from the event that closes the window instead. There
+is no limit between two steps other than this one.
+
+```json
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws1", "timestamp": "2026-11-01T10:00:00Z"}
+{"EventID": 7045, "Host": "ws1", "timestamp": "2026-11-01T10:10:00Z"}
+{"Image": "C:\\Windows\\System32\\whoami.exe", "Host": "ws2", "timestamp": "2026-11-01T10:00:00Z"}
+{"EventID": 7045, "Host": "ws2", "timestamp": "2026-11-01T10:10:01Z"}
+```
+
+```console
+$ sigma2sql test sequence.yml edge.jsonl
+{"Host": "ws1", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 10:10:00.000", "value": 2}
+Recon, then a new service on one host: 1 results
+```
+
+Ten minutes exactly is in the window of `sequence.yml`, one second more is not.
+
+Without a `timespan`, a step can be any time after the one before it, so `ws3` from the first
+example is now reported. `no_timespan.yml` is `sequence.yml` without that key and with its own
+title. A row still stands for one start, and it keeps `window_start` and `window_end`:
+
+```console
+$ sigma2sql test no_timespan.yml sequence.jsonl
+{"Host": "ws1", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 10:04:00.000", "value": 2}
+{"Host": "ws1", "window_start": "2026-11-01 10:20:00.000", "window_end": "2026-11-01 10:21:00.000", "value": 2}
+{"Host": "ws3", "window_start": "2026-11-01 10:00:00.000", "window_end": "2026-11-01 11:00:00.000", "value": 2}
+Recon, then a new service, any time later: 3 results
+```
+
+#### SQL shape
+
+`temporal_ordered` has no `windows` query. It has one CTE per step, named `s0`, `s1` and so on,
+and each one keeps the earliest next event of every start:
+
+```console
+$ sigma2sql convert sequence.yml
+-- Recon, then a new service on one host
+WITH base AS (
+  SELECT 'recon' AS sigma_rule, unixepoch("timestamp", 'subsec') AS sigma_ts, "Host" AS "g0" FROM "events" WHERE "Image" LIKE '%\\whoami.exe' ESCAPE '\'
+  UNION ALL
+  SELECT 'new_service' AS sigma_rule, unixepoch("timestamp", 'subsec') AS sigma_ts, "Host" AS "g0" FROM "events" WHERE "EventID" = 7045
+),
+s0 AS (SELECT DISTINCT "g0", sigma_ts AS t0 FROM base WHERE sigma_rule = 'recon' AND sigma_ts IS NOT NULL),
+s1 AS (SELECT p."g0" AS "g0", p.t0 AS t0, MIN(e.sigma_ts) AS t1 FROM s0 p JOIN base e ON e.sigma_rule = 'new_service' AND e."g0" IS p."g0" AND e.sigma_ts >= p.t0 AND e.sigma_ts <= p.t0 + 600 GROUP BY p."g0", p.t0)
+SELECT "g0" AS "Host", datetime(t0, 'unixepoch', 'subsec') AS window_start, datetime(t1, 'unixepoch', 'subsec') AS window_end, 2 AS value
+FROM s1;
+
+```
+
+`s0` holds the start times of each group, in `t0`, and leaves out events without a time. Each
+later CTE joins the one before it to `base`, and asks for the next rule in the same group, at or
+after the step before it and within the timespan of `t0`. A rule that comes back also needs a
+`>` against its last earlier step. A third step adds `s2` in the same way, with `t1` next to
+`t0`. `MIN` keeps the earliest event of the step, as a later one could do no better. There is no
+`HAVING`, because a start only reaches the result if every join found an event; that is also
+why `value` is a fixed number.
+
+The other dialects have the same CTEs, with the differences in the
+[table below](#per-dialect-notes). Each CTE has one row per start, however many events follow
+it, so the rows do not multiply from step to step. Each step still compares every start with
+the events of its group, so large groups with a long `timespan`, or none, cost more than a
+count.
 
 ## Conditions
 
@@ -369,7 +646,7 @@ Three failed logons in a minute: 2 results
 The first three `admin` events reach the threshold at 03:12:17. The fourth gives a second row
 with `value` 4. The fifth comes more than 17 minutes later, in a window of its own.
 `window_start` is the time of the first event in the window, not `window_end` minus the
-timespan.
+timespan. `temporal_ordered` [counts forward from its first step](#timespan) instead.
 
 `timespan` is a whole number with `s`, `m`, `h`, `d` or `w`. Anything else is an error:
 
@@ -385,7 +662,8 @@ syntax](#the-older-count-syntax) only.
 ### Without a timespan
 
 There is one result per group over everything in the table, with `first_seen` and `last_seen`
-in place of the window. Without `group-by`, there is a single group.
+in place of the window. Without `group-by`, there is a single group. `temporal_ordered` is the
+exception: it [stays a row per start](#timespan).
 
 ```yaml
 title: Failed logon
@@ -434,7 +712,9 @@ Three failed logons in a minute: 1 results
 
 An event whose time is missing or cannot be read has a NULL time. No query fails because of it.
 Such an event does not close a window and is in no window. Without a `timespan` it still
-counts, which is why `guest` above has a `value` of 3 and null times.
+counts, which is why `guest` above has a `value` of 3 and null times. In `temporal_ordered`,
+with or without a `timespan`, such an event cannot be part of a sequence. That holds with a
+single rule too, so the event gives no row.
 
 The field is a path in the event. With a JSON column, a profile's `default_field` is tried after
 that path, and a `-m` entry for the field wins over both. See
@@ -480,8 +760,10 @@ $ sigma2sql convert split/rule.yml split/corr.yml > /dev/null; echo $?
 `test` and `check` load one file at a time, so for those the rules and the correlation have to
 be in the same file.
 
-Each rule contributes its own matches. An event that matches two listed rules therefore counts
-twice in `event_count`, and it satisfies a `temporal` correlation over those two rules alone:
+Each rule contributes its own matches, and a rule listed twice still contributes them once. In
+`temporal_ordered`, each listing is a step of its own. An event that matches two listed rules
+counts twice in `event_count`, and it satisfies a `temporal` or `temporal_ordered` correlation
+over those two rules alone:
 
 ```yaml
 title: Rule one
@@ -677,6 +959,9 @@ A row holds the `group-by` fields under their own names, then two times, then `v
 | time of the last event | `window_end` | `last_seen` |
 | `value` | the [counted value](#types) of the window | the counted value of the group |
 
+`temporal_ordered` always has `window_start` and `window_end`, and they mean
+[something a little different](#what-a-row-means).
+
 `test` and `hunt` show times in UTC. `test` runs on SQLite and always prints milliseconds.
 `hunt` runs on DuckDB and prints a fraction of a second only if the time has one. In `hunt`,
 the `HITS` column is the number of rows, so one burst can show as several hits. `--examples N`
@@ -708,7 +993,8 @@ $ sigma2sql hunt examples/rules/brute_force.yml --logs examples/events.jsonl --f
 
 ## Per-dialect notes
 
-The window is a self-join on a `base` query. All four dialects get the same structure:
+The window is a self-join on a `base` query. All four dialects get the same structure.
+`temporal_ordered` has [a shape of its own](#sql-shape), which is also the same on all four:
 
 === "SQLite"
 
@@ -792,21 +1078,22 @@ The parts that differ:
 
 ## Not supported
 
-`temporal_ordered` is not supported in this version. Such a file is skipped, with everything
-else in it, and `convert` exits 1. Any other error in the keys of a correlation, such as a bad
-`timespan` or `condition`, skips the file in the same way:
-
-```console
-$ sigma2sql convert ordered.yml
-skip ordered.yml: temporal_ordered correlations are not supported
-```
-
 A `temporal` correlation with a boolean condition, such as `recon and new_service`, is not
-supported either. `condition` has to be a map:
+supported. `condition` has to be a map. Such a file is skipped, with everything else in it, and
+`convert` exits 1. Any other error in the keys of a correlation, such as a bad `timespan` or
+`condition`, skips the file in the same way:
 
 ```console
 $ sigma2sql convert bad_bool.yml
 skip bad_bool.yml: correlation 'condition' must be a map
+```
+
+`temporal_ordered` needs every step in order. Any numeric condition other than `gte` the number
+of steps skips the file too:
+
+```console
+$ sigma2sql convert fewer_steps.yml
+skip fewer_steps.yml: temporal_ordered needs all of its rules, in order
 ```
 
 A correlation that names a rule you did not load is skipped on its own. Other rules in the file

@@ -268,8 +268,8 @@ A rule that cannot be converted is skipped with the reason on stderr. The others
 
 ```console
 $ sigma2sql convert rules -d duckdb > rules.sql; echo $?
+skip rules/boolean.yml: correlation 'condition' must be a map
 skip rules/broken.yml: missing 'detection' section
-skip rules/ordered.yml: temporal_ordered correlations are not supported
 skip rules/lookahead.yml: duckdb (RE2) has no lookaround or backreferences: foo(?!bar)
 skip rules/mimikatz.yml: keyword searches need a keyword column or a JSON column
 skip rules/modifier.yml: modifier 'sounds_like' is not supported
@@ -293,7 +293,8 @@ The common reasons:
 | `postgres regexes allow at most 255 repetitions: ...` | a `{m,n}` count above 255; the limit is 1000 on DuckDB and ClickHouse, and SQLite has none |
 | `duckdb (RE2) has no lookaround or backreferences: ...` | a lookahead, lookbehind or backreference; ClickHouse has the same limit |
 | `placeholder %x% has no value (see --placeholders)` | see [placeholders](placeholders.md) |
-| `temporal_ordered correlations are not supported` | see [correlations](correlations.md#not-supported) |
+| `correlation 'condition' must be a map` | a boolean condition, see [correlations](correlations.md#not-supported) |
+| `temporal_ordered needs all of its rules, in order` | a `condition` other than `gte` the number of steps, see [correlations](correlations.md#not-supported) |
 | `correlation refers to unknown rules: x` | the rule was not among the paths you gave |
 | `legacy rule collections ('action: global') are not supported` | old multi-document rule files |
 | `missing 'detection' section` | the file is not a Sigma rule |
@@ -301,7 +302,7 @@ The common reasons:
 | `invalid YAML: ...` | the parser's message follows |
 
 A problem found while loading skips the whole file. In a file with a good rule and a
-`temporal_ordered` correlation, neither is converted:
+`temporal` correlation with a boolean condition, neither is converted:
 
 ```yaml
 title: Good rule
@@ -311,15 +312,16 @@ detection:
     EventID: 1
   condition: selection
 ---
-title: Ordered
+title: Either order
 correlation:
-  type: temporal_ordered
+  type: temporal
   rules: [good]
+  condition: good
 ```
 
 ```console
 $ sigma2sql convert mixed.yml
-skip mixed.yml: temporal_ordered correlations are not supported
+skip mixed.yml: correlation 'condition' must be a map
 ```
 
 Problems found later, such as a missing placeholder or a dialect limit, only skip that rule.

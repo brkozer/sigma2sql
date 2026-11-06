@@ -414,7 +414,7 @@ with the reason, and the summary counts them:
 
 ```console
 $ sigma2sql hunt broken more/encoded_powershell.yml --logs logs/events.jsonl
-skip broken/ordered.yml: temporal_ordered correlations are not supported
+skip broken/boolean.yml: correlation 'condition' must be a map
 skip broken/expand.yml: placeholder %tools% has no value (see --placeholders)
 skip broken/lookaround.yml: duckdb (RE2) has no lookaround or backreferences: (?<!foo)bar
 skip broken/typo.yml: condition refers to unknown search 'missing'
@@ -425,9 +425,9 @@ high             2  PowerShell started with an encoded command  (more/encoded_po
 
 The reasons are rule files that do not load (bad YAML, an empty file, a file that is not
 UTF-8), conditions that name an unknown search, Sigma features that are not supported, such as
-`temporal_ordered`, placeholders without a value, patterns RE2 cannot run, and correlations
-that refer to rules that were not loaded. If DuckDB itself rejects a query, the first line of
-its error is the reason. A bad rule does not end the hunt.
+a `temporal` correlation with a boolean condition, placeholders without a value, patterns RE2
+cannot run, and correlations that refer to rules that were not loaded. If DuckDB itself rejects
+a query, the first line of its error is the reason. A bad rule does not end the hunt.
 
 Skipped rules do not change the exit code as long as one rule ran, so in CI look at the summary
 as well. If rules were skipped and none could run, the hunt ends with code 2. Rules left out by

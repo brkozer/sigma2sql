@@ -36,9 +36,9 @@ For a correlation the file is one scenario, not a list of independent events:
 - `.nomatch.jsonl`: the rule must give no result over all of them.
 
 The same applies to the older `| count()` conditions. Events need a time when the correlation
-has a `timespan`, in the field `timestamp` unless a profile or `--timestamp-field` says
-otherwise. This is the match file of `examples/rules/brute_force.yml`, three failed logons
-inside five minutes:
+has a `timespan` or is `temporal_ordered`, in the field `timestamp` unless a profile or
+`--timestamp-field` says otherwise. This is the match file of
+`examples/rules/brute_force.yml`, three failed logons inside five minutes:
 
 ```json
 {"EventID": 4625, "TargetUserName": "admin", "timestamp": "2026-11-01T03:12:01Z"}
@@ -241,7 +241,7 @@ the same ref and fails the step when `check` fails.
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: brkozer/sigma2sql@v0.3.1
+- uses: brkozer/sigma2sql@v0.3.2
   with:
     path: rules
     profile: sysmon
@@ -259,7 +259,7 @@ the same ref and fails the step when `check` fails.
 Several paths can go on one line or on a line each:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.3.1
+- uses: brkozer/sigma2sql@v0.3.2
   with:
     path: |
       rules/windows
@@ -318,7 +318,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: brkozer/sigma2sql@v0.3.1
+      - uses: brkozer/sigma2sql@v0.3.2
         with:
           path: rules
           profile: sysmon

@@ -16,8 +16,8 @@ it cannot translate. For how this is verified, see [how it is checked](correctne
 | `lt`, `lte`, `gt`, `gte`, `exists`, `fieldref`, `null` | ✓ | ✓ | ✓ | ✓ ⁴ |
 | `minute`, `hour`, `day`, `week`, `month`, `year` (UTC, ISO weeks) | ✓ | ✓ | ✓ | ✓ |
 | `expand` placeholders, filters | ✓ | ✓ | ✓ | ✓ |
-| correlations, `count()` aggregations | ✓ ¹ | ✓ | ✓ | ✓ ⁵ |
-| `temporal_ordered`, `temporal` with a boolean condition | – | – | – | – |
+| correlations, `temporal_ordered` included, `count()` aggregations | ✓ ¹ | ✓ | ✓ | ✓ ⁵ |
+| `temporal` with a boolean condition | – | – | – | – |
 
 ¹ Not built into the database. `hunt`, `test` and `check` register what they need. When you
 run the SQL elsewhere, register `regexp(pattern, value)`, `cidr_match(value, network)` and, for
@@ -39,8 +39,8 @@ counts above 1000 are reported too.
 `JOIN ON`. One SigmaHQ rule, a list of driver hashes, is larger than the default
 `max_query_size` of 256 KiB and needs that setting raised.
 
-`temporal_ordered` is not supported in this version. The correlation types that are, and how
-their windows work, are on the [correlations page](correlations.md).
+The correlation types and how their windows work are on the
+[correlations page](correlations.md).
 
 ## Conditions
 
@@ -203,8 +203,8 @@ An empty string is a value, not a missing field. In a list, `null` is one of the
 
 | Rule uses | Reported as |
 | --- | --- |
-| `temporal_ordered` | `temporal_ordered correlations are not supported` |
 | `temporal` with a boolean condition | `correlation 'condition' must be a map` |
+| `temporal_ordered` with a `condition` other than `gte` the number of steps | `temporal_ordered needs all of its rules, in order` |
 | another correlation type | `correlation type 'x' is not supported` |
 | an aggregation other than `count()`, such as `sum` or `near` | `aggregation 'sum(bytes) > 5' is not supported (only count)` |
 | an aggregation in a list of conditions | `aggregations need a single condition` |
@@ -224,10 +224,10 @@ The last four depend on the database or options, so the same rule can work on on
 not on another. Rules that are not valid Sigma, such as one with a missing `detection` section
 or a condition that names an unknown search, are reported the same way.
 
-A problem found while reading a file applies to the whole file. A `temporal_ordered` correlation
-in a file takes the rules in that file with it. The same goes for a rule with an unsupported
-aggregation and any other document in the file. A problem found while building a rule's SQL,
-such as an unknown modifier, only affects that rule.
+A problem found while reading a file applies to the whole file. A `temporal` correlation with a
+boolean condition takes the rules in that file with it. The same goes for a rule with an
+unsupported aggregation and any other document in the file. A problem found while building a
+rule's SQL, such as an unknown modifier, only affects that rule.
 
 ## How it is reported
 
@@ -240,7 +240,7 @@ different result per dialect, here for a lookahead:
 
 ```console
 $ sigma2sql convert rules
-skip rules/sequence.yml: temporal_ordered correlations are not supported
+skip rules/boolean.yml: correlation 'condition' must be a map
 skip rules/sum.yml: aggregation 'sum(bytes) > 5' is not supported (only count)
 -- A plain rule
 SELECT * FROM "events" WHERE "Image" = 'x' COLLATE NOCASE;
@@ -252,7 +252,7 @@ SELECT * FROM "events" WHERE "Image" REGEXP 'cmd(?!\.exe)';
 converted 2/5 rules
 
 $ sigma2sql convert rules -d duckdb
-skip rules/sequence.yml: temporal_ordered correlations are not supported
+skip rules/boolean.yml: correlation 'condition' must be a map
 skip rules/sum.yml: aggregation 'sum(bytes) > 5' is not supported (only count)
 -- A plain rule
 SELECT * FROM "events" WHERE LOWER("Image") = 'x';
@@ -269,7 +269,7 @@ and does not end the hunt.
 
 ```console
 $ sigma2sql hunt rules --logs events.jsonl
-skip rules/sequence.yml: temporal_ordered correlations are not supported
+skip rules/boolean.yml: correlation 'condition' must be a map
 skip rules/sum.yml: aggregation 'sum(bytes) > 5' is not supported (only count)
 skip rules/hash.yml: modifier 'sha256' is not supported
 skip rules/lookahead.yml: duckdb (RE2) has no lookaround or backreferences: cmd(?!\.exe)
@@ -284,8 +284,8 @@ LEVEL         HITS  RULE
 $ sigma2sql test rules/hash.yml events.jsonl
 sigma2sql: Unknown modifier: modifier 'sha256' is not supported
 
-$ sigma2sql test rules/sequence.yml events.jsonl
-skip rules/sequence.yml: temporal_ordered correlations are not supported
+$ sigma2sql test rules/boolean.yml events.jsonl
+skip rules/boolean.yml: correlation 'condition' must be a map
 ```
 
 `check` turns the problem into a failed test with exit code 1, with or without test files. See
