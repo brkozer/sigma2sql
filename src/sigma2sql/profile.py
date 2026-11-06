@@ -5,6 +5,7 @@ A profile is a YAML file:
     description: one line shown by `sigma2sql profiles`
     json_column: data            # optional
     nested: true                 # dotted names are paths into nested JSON
+    product: windows             # optional: `hunt` only runs rules for this product
     timestamp: "@timestamp"
     timestamp_format: iso        # iso, epoch_s or epoch_ms
     default_field: "winlog.event_data.{field}"
@@ -34,6 +35,7 @@ KEYS = {
     "description",
     "json_column",
     "nested",
+    "product",
     "timestamp",
     "timestamp_format",
     "default_field",
@@ -108,6 +110,7 @@ def apply_profile(target: Target, profile: dict[str, Any]) -> Target:
         timestamp_format=fmt,
         default_field=templates if templates is not None else target.default_field,
         routes=(*target.routes, *routes),
+        product=str(profile["product"]) if "product" in profile else target.product,
     )
 
 

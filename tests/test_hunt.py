@@ -244,3 +244,39 @@ def test_a_failing_rule_does_not_end_the_hunt(
     assert "Office application" in out.out
     assert "skip" in out.err and "bad.yml" in out.err
     assert "1 rules skipped" in out.err
+
+
+NOT_A_RANGE = """title: {title}
+logsource: {logsource}
+detection:
+  inside: {{IpAddress|cidr: 10.0.0.0/8}}
+  condition: not inside
+"""
+
+
+def test_profile_keeps_rules_for_other_products_out(
+    tmp_path: Path, fake_evtx: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A negated rule for another product would otherwise match every event."""
+    for title, logsource in [
+        ("Zeek", "{product: zeek, service: rdp}"),
+        ("Proxy", "{category: proxy}"),
+        ("Windows", "{product: windows, service: sysmon}"),
+    ]:
+        rule = NOT_A_RANGE.format(title=title, logsource=logsource)
+        (tmp_path / f"{title}.yml").write_text(rule)
+    (tmp_path / "a.evtx").write_bytes(b"")
+    assert main(["hunt", str(tmp_path), "--logs", str(tmp_path / "a.evtx")]) == 0
+    out = capsys.readouterr()
+    assert "Windows" in out.out and "Zeek" not in out.out and "Proxy" not in out.out
+    assert "1 of 1 rules matched" in out.err
+    assert "2 rules are for other log sources" in out.err
+
+
+def test_without_a_product_every_rule_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rule = tmp_path / "zeek.yml"
+    rule.write_text(NOT_A_RANGE.format(title="Zeek", logsource="{product: zeek}"))
+    assert main(["hunt", str(rule), "--logs", EVENTS]) == 0
+    assert "1 of 1 rules matched" in capsys.readouterr().err

@@ -1,4 +1,5 @@
 description: Windows events shipped by Winlogbeat in Elastic Common Schema (nested JSON); unmapped fields fall back to winlog.event_data
+product: windows
 nested: true
 timestamp: "@timestamp"
 default_field: "winlog.event_data.{field}"

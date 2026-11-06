@@ -64,7 +64,9 @@ medium           1  Successful RDP logon from a public address  (examples/rules/
 for code scanning, and `--fail-on high` a non-zero exit code when a rule at that level or
 above fires.
 
-`.evtx` files use the `evtx` profile unless you pass another one. Logs from an incident are
+`.evtx` files use the `evtx` profile unless you pass another one. The Windows profiles only
+run rules for `product: windows`, so a directory of all SigmaHQ rules can be used as it is;
+the rest are counted on stderr. Logs from an incident are
 often damaged, so everything readable is kept and the rest is reported: a cut-off file or a
 bad chunk gives a warning, and only a hunt that could read no event at all is an error.
 
@@ -171,6 +173,7 @@ Your own profile is a small YAML file:
 ```yaml
 nested: true
 timestamp: "@timestamp"
+product: windows                                # optional: `hunt` runs only these rules
 default_field: "winlog.event_data.{field}"      # fallback for unmapped fields
 fields:
   Image: process.executable

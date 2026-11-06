@@ -1,4 +1,5 @@
 description: Sysmon events with their original field names; each Sigma category is limited to its Sysmon event ID
+product: windows
 timestamp: UtcTime
 logsources:
   - {match: {product: windows, category: process_creation}, where: {EventID: 1}}

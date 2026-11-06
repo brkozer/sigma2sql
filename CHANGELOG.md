@@ -21,6 +21,8 @@
   the whole query in `cidr`, number comparisons and correlations. Such values are now skipped,
   which needs PostgreSQL 16 or newer.
 - Fix: on SQLite text in a number field counted as 0, so `Port|lt: 100` matched `n/a`.
+- Fix: `hunt` with a Windows profile also ran rules for other products, and a negated Zeek or
+  Cisco rule then matched every Windows event. Profiles can now name their `product`.
 - Coverage is now measured on all five SigmaHQ rule folders, not only `rules/`: 3807/3807 on
   SQLite, DuckDB and ClickHouse, 3804/3807 on PostgreSQL. The README used to say "every
   SigmaHQ rule" for `rules/` alone, where 27 placeholder rules elsewhere did not convert.

@@ -310,6 +310,8 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
         f" ({len(report_.skipped) + len(col.errors)} rules skipped)",
         file=sys.stderr,
     )
+    if report_.other_logs:
+        print(f"{report_.other_logs} rules are for other log sources", file=sys.stderr)
     if args.sarif:
         _write_sarif(args.sarif, [_hit_finding(h) for h in report_.hits])
     if args.fail_on:

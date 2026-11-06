@@ -98,6 +98,8 @@ class Target:
     nested: bool = False
     default_field: str | tuple[str, ...] | None = None
     routes: tuple[Route, ...] = ()
+    # The logs only hold this `logsource.product`, so `hunt` leaves out rules for others.
+    product: str | None = None
     # Values for `%name%` placeholders in rules that use the `expand` modifier.
     placeholders: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
 

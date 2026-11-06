@@ -44,6 +44,8 @@ class Report:
     hits: list[Hit]
     ran: int
     skipped: list[tuple[Document, str]]
+    # Rules left out because they are for another product than the profile's logs.
+    other_logs: int = 0
     # Logs that could only be read in part.
     warnings: list[str] = field(default_factory=list)
 
@@ -151,7 +153,8 @@ def hunt(
     # All logs share one table here, so profile routes keep only their conditions.
     routes = tuple(replace(r, table=None) for r in base.routes)
     target = replace(base, dialect="duckdb", table=TABLE, json_column=COLUMN, routes=routes)
-    items: list[Document] = [*rules.standalone(), *rules.correlations]
+    candidates: list[Document] = [*rules.standalone(), *rules.correlations]
+    items = [item for item in candidates if _for_these_logs(item, rules, target)]
     hits: list[Hit] = []
     skipped: list[tuple[Document, str]] = []
     for item in items:
@@ -172,7 +175,24 @@ def hunt(
             sample = [row[0] for row in con.execute(f"{shown} LIMIT {examples}").fetchall()]
         hits.append(Hit(item, count, sample))
     hits.sort(key=lambda h: (h.rank, -h.count, h.rule.title))
-    return Report(events, hits, len(items) - len(skipped), skipped, warnings)
+    other_logs = len(candidates) - len(items)
+    return Report(events, hits, len(items) - len(skipped), skipped, other_logs, warnings)
+
+
+def _for_these_logs(item: Document, rules: Collection, target: Target) -> bool:
+    """Whether a rule can apply. Without this, a Zeek rule of the form `not <address range>`
+    would match every Windows event, as those have no such field."""
+    if target.product is None:
+        return True
+    wanted = target.product.lower()
+    if isinstance(item, Correlation):
+        try:
+            return any(
+                r.logsource.get("product", "").lower() == wanted for r in rules.resolve(item)
+            )
+        except RuleError:
+            return True  # reported as skipped when the query is built
+    return item.logsource.get("product", "").lower() == wanted
 
 
 def _query(item: Document, rules: Collection, target: Target) -> tuple[str, bool]:

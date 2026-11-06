@@ -1,4 +1,5 @@
 description: Windows event logs exported to JSON by evtx_dump or python-evtx (Event.System / Event.EventData)
+product: windows
 nested: true
 timestamp: "Event.System.TimeCreated.#attributes.SystemTime"
 # Some providers (e.g. Defender) name fields with spaces: "New Value" for NewValue.
