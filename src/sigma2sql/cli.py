@@ -21,6 +21,7 @@ from sigma2sql.profile import apply_profile, builtin_profiles, load_placeholders
 from sigma2sql.rule import Correlation, Document
 from sigma2sql.runner import matching_events, read_jsonl, rows
 from sigma2sql.runner import target as runner_target
+from sigma2sql.sarif import Finding, report
 from sigma2sql.sql import DIALECTS, Target, to_query
 
 
@@ -47,13 +48,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     _field_options(test)
 
-    hunt_p = sub.add_parser("hunt", help="run rules over JSON, Parquet or CSV logs with DuckDB")
+    hunt_p = sub.add_parser(
+        "hunt", help="run rules over EVTX, JSON, Parquet or CSV logs with DuckDB"
+    )
     hunt_p.add_argument("rules", nargs="+", type=Path, help="rule files or directories")
     hunt_p.add_argument(
         "-l", "--logs", nargs="+", required=True, help="log files; globs such as 'logs/*.json'"
     )
     hunt_p.add_argument("-e", "--examples", type=int, default=0, help="matching events to show")
     hunt_p.add_argument("--format", choices=("table", "json"), default="table")
+    hunt_p.add_argument("--sarif", type=Path, help="also write the matches to this SARIF file")
     hunt_p.add_argument(
         "--fail-on", choices=LEVELS, help="exit 1 if a rule at this level or above matches"
     )
@@ -66,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     check.add_argument(
         "--require-tests", action="store_true", help="fail when a rule has no test events"
     )
+    check.add_argument("--sarif", type=Path, help="also write the failures to this SARIF file")
     _field_options(check)
 
     sub.add_parser("profiles", help="list the built-in profiles")
@@ -84,13 +89,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"sigma2sql: {exc}", file=sys.stderr)
         return 2
+    if args.command == "hunt" and not args.profile and any(_is_evtx(p) for p in args.logs):
+        # EVTX events have one known layout, so the right profile needs no asking.
+        target = apply_profile(target, load_profile("evtx"))
     if args.command == "convert":
         return _convert(args.paths, target)
     if args.command == "hunt":
         return _hunt(args, target)
     if args.command == "check":
-        return _check(args.paths, target, args.require_tests)
+        return _check(args.paths, target, args.require_tests, args.sarif)
     return _test(args.rule, args.events, target, args.expect)
+
+
+def _is_evtx(path: str) -> bool:
+    return Path(path).suffix.lower() == ".evtx"
 
 
 def _field_options(p: argparse.ArgumentParser) -> None:
@@ -203,8 +215,19 @@ def _test(path: Path, events_path: Path, target: Target, expect: str | None) -> 
     return 0
 
 
-def _check(paths: list[Path], target: Target, require_tests: bool) -> int:
+def _write_sarif(path: Path, findings: list[Finding]) -> None:
+    text = json.dumps(report(findings, version("sigma2sql")), indent=2)
+    path.write_text(text + "\n", encoding="utf-8")
+
+
+def _check(paths: list[Path], target: Target, require_tests: bool, sarif: Path | None) -> int:
     passed = failed = untested = 0
+    findings: list[Finding] = []
+
+    def fail(path: Path, problem: str) -> None:
+        print(f"FAIL {path}: {problem}")
+        findings.append(Finding("rule-test", "Sigma rule test failed", "high", problem, path))
+
     for path in rule_files(paths):
         cases = [
             (f, f.name.endswith(".match.jsonl"))
@@ -215,17 +238,19 @@ def _check(paths: list[Path], target: Target, require_tests: bool) -> int:
             untested += 1
             if require_tests:
                 failed += 1
-                print(f"FAIL {path}: no {path.stem}.match.jsonl or .nomatch.jsonl")
+                fail(path, f"no {path.stem}.match.jsonl or .nomatch.jsonl")
             continue
         problems = _check_rule(path, cases, target)
         if problems:
             failed += 1
             for problem in problems:
-                print(f"FAIL {path}: {problem}")
+                fail(path, problem)
         else:
             passed += 1
             print(f"ok   {path}")
     print(f"{passed} passed, {failed} failed, {untested} without tests", file=sys.stderr)
+    if sarif:
+        _write_sarif(sarif, findings)
     return 1 if failed else 0
 
 
@@ -267,27 +292,37 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
     col = Collection.load(args.rules)
     _report_errors(col)
     try:
-        report = hunt(col, args.logs, target, args.examples)
+        report_ = hunt(col, args.logs, target, args.examples)
     except Exception as exc:  # DuckDB raises its own error types for unreadable files
         print(f"sigma2sql: {exc}", file=sys.stderr)
         return 2
-    for item, reason in report.skipped:
+    for warning in report_.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    for item, reason in report_.skipped:
         print(f"skip {item.path or item.title}: {reason}", file=sys.stderr)
 
     if args.format == "json":
-        print(json.dumps([_hit_json(h) for h in report.hits], indent=2))
+        print(json.dumps([_hit_json(h) for h in report_.hits], indent=2))
     else:
-        _print_table(report)
+        _print_table(report_)
     print(
-        f"{len(report.hits)} of {report.ran} rules matched {report.events} events"
-        f" ({len(report.skipped) + len(col.errors)} rules skipped)",
+        f"{len(report_.hits)} of {report_.ran} rules matched {report_.events} events"
+        f" ({len(report_.skipped) + len(col.errors)} rules skipped)",
         file=sys.stderr,
     )
+    if args.sarif:
+        _write_sarif(args.sarif, [_hit_finding(h) for h in report_.hits])
     if args.fail_on:
         limit = LEVELS.index(args.fail_on)
-        if any(h.rank <= limit for h in report.hits):
+        if any(h.rank <= limit for h in report_.hits):
             return 1
     return 0
+
+
+def _hit_finding(h: Hit) -> Finding:
+    matches = "match" if h.count == 1 else "matches"
+    message = f"{h.rule.title}: {h.count} {matches} in the hunted logs"
+    return Finding(h.rule.id or h.rule.title, h.rule.title, h.rule.level, message, h.rule.path)
 
 
 def _print_table(report: Report) -> None:

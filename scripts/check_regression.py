@@ -1,12 +1,13 @@
 """Run SigmaHQ's regression samples through sigma2sql.
 
-    uv run python scripts/check_regression.py path/to/sigma [--clickhouse URL] [--verbose]
+    uv run python scripts/check_regression.py path/to/sigma [--clickhouse URL] [--evtx] [--verbose]
 
 SigmaHQ keeps real event samples for many rules under `regression_data/` (EVTX files with a
 JSON export next to them) and the number of matches each rule must produce. This loads the
 JSON samples with the built-in `evtx` profile, runs each rule on SQLite and DuckDB (and
-ClickHouse, given its address) and checks the match count. Exits 1 if any rule finds fewer
-matches than SigmaHQ expects or the databases disagree.
+ClickHouse, given its address) and checks the match count; with --evtx `hunt` also reads the
+EVTX file itself. Exits 1 if any rule finds fewer matches than SigmaHQ expects or the results
+disagree.
 """
 
 from __future__ import annotations
@@ -22,8 +23,9 @@ from typing import Any
 
 import yaml
 
-from sigma2sql import Rule, RuleError, Target, UnsupportedRule, load_file, to_query
+from sigma2sql import Collection, Rule, RuleError, Target, UnsupportedRule, load_file, to_query
 from sigma2sql.hunt import connect as duckdb_connect
+from sigma2sql.hunt import hunt
 from sigma2sql.profile import apply_profile, load_profile
 from sigma2sql.runner import matching_events
 
@@ -72,7 +74,12 @@ def clickhouse_matches(url: str, rule: Rule, events: list[dict[str, Any]], targe
     return int(run(f"SELECT COUNT(*) FROM ({to_query(rule, tgt)}) q"))
 
 
-def main(root: Path, verbose: bool, clickhouse: str | None = None) -> int:
+def evtx_matches(rule: Rule, path: Path, target: Target) -> int:
+    report = hunt(Collection(rules=[rule]), [str(path)], target)
+    return sum(hit.count for hit in report.hits)
+
+
+def main(root: Path, verbose: bool, clickhouse: str | None = None, evtx: bool = False) -> int:
     rules: dict[str, Rule] = {}
     for name in RULE_DIRS:
         for path in sorted((root / name).rglob("*.yml")):
@@ -89,6 +96,8 @@ def main(root: Path, verbose: bool, clickhouse: str | None = None) -> int:
     passed = {"sqlite": 0, "duckdb": 0}
     if clickhouse:
         passed["clickhouse"] = 0
+    if evtx:
+        passed["evtx"] = 0
     failures: list[str] = []
     for info_path in sorted((root / "regression_data").rglob("info.yml")):
         info = yaml.safe_load(info_path.read_text(encoding="utf-8")) or {}
@@ -107,6 +116,8 @@ def main(root: Path, verbose: bool, clickhouse: str | None = None) -> int:
             }
             if clickhouse:
                 results["clickhouse"] = clickhouse_matches(clickhouse, rule, events, target)
+            if evtx:
+                results["evtx"] = evtx_matches(rule, sample.with_suffix(".evtx"), target)
             if len(set(results.values())) > 1:
                 failures.append(f"databases disagree on {rule.title}: {results}")
             for engine, found in results.items():
@@ -130,6 +141,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sigma", type=Path, help="SigmaHQ repository checkout")
     parser.add_argument("--clickhouse", help="ClickHouse HTTP URL")
+    parser.add_argument("--evtx", action="store_true", help="also read the EVTX files with hunt")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
-    sys.exit(main(args.sigma, args.verbose, args.clickhouse))
+    sys.exit(main(args.sigma, args.verbose, args.clickhouse, args.evtx))

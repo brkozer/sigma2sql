@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import glob
 import ipaddress
+import json
+import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -16,6 +20,11 @@ from sigma2sql.sql import Target, literal, to_query
 LEVELS = ("critical", "high", "medium", "low", "informational")
 TABLE = "events"
 COLUMN = "data"
+# EVTX layout: a 4 KiB file header, then 64 KiB chunks.
+EVTX_HEADER = 4096
+EVTX_CHUNK = 65536
+# Damaged chunks reported per file before giving up on the rest of it.
+MAX_EVTX_ERRORS = 100
 
 
 @dataclass
@@ -35,6 +44,8 @@ class Report:
     hits: list[Hit]
     ran: int
     skipped: list[tuple[Document, str]]
+    # Logs that could only be read in part.
+    warnings: list[str] = field(default_factory=list)
 
 
 def connect() -> Any:
@@ -48,11 +59,15 @@ def connect() -> Any:
     return con
 
 
-def load_logs(con: Any, paths: list[str]) -> int:
-    """Load JSON/JSON Lines, Parquet or CSV files (globs allowed) as one JSON object per row."""
+def load_logs(con: Any, paths: list[str], warnings: list[str] | None = None) -> int:
+    """Load JSON/JSON Lines, Parquet, CSV or EVTX files (globs allowed), one JSON object per row."""
+    warnings = [] if warnings is None else warnings
     for path in paths:
         source = literal(path)
         suffix = Path(path).suffix.lower()
+        if suffix == ".evtx":
+            _load_evtx(con, path, warnings)
+            continue
         if suffix == ".parquet":
             select = f"SELECT to_json(t) FROM read_parquet({source}) t"
         elif suffix in (".csv", ".tsv"):
@@ -60,10 +75,66 @@ def load_logs(con: Any, paths: list[str]) -> int:
         elif suffix in (".json", ".jsonl", ".ndjson"):
             select = f"SELECT json FROM read_json_objects({source}, format = 'auto')"
         else:
-            raise ValueError(f"{path}: expected .json, .jsonl, .ndjson, .parquet or .csv")
+            raise ValueError(f"{path}: expected .json, .jsonl, .ndjson, .parquet, .csv or .evtx")
         con.execute(f"INSERT INTO {TABLE} {select}")
     count: int = con.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
     return count
+
+
+def _load_evtx(con: Any, pattern: str, warnings: list[str]) -> None:
+    """Windows event logs, in the JSON layout of evtx_dump (see the `evtx` profile).
+
+    Logs from an incident are often damaged, so everything readable is kept and whatever
+    could not be read is reported. Only when nothing at all can be read is that an error.
+    """
+    files = sorted(glob.glob(pattern))
+    if not files:
+        raise ValueError(f"{pattern}: no such file")
+    with tempfile.TemporaryDirectory() as tmp:
+        lines = Path(tmp) / "events.jsonl"
+        with lines.open("w", encoding="utf-8") as out:
+            count = 0
+            for file in files:
+                for event in _evtx_events(file, warnings):
+                    out.write(event + "\n")
+                    count += 1
+        if not count and warnings:
+            raise ValueError(f"{pattern}: no event could be read: {warnings[-1]}")
+        source = literal(str(lines))
+        select = f"SELECT json FROM read_json_objects({source}, format = 'newline_delimited')"
+        con.execute(f"INSERT INTO {TABLE} {select}")
+
+
+def _evtx_events(path: str, warnings: list[str]) -> Iterator[str]:
+    try:
+        from evtx import PyEvtxParser
+    except ImportError as exc:  # pragma: no cover - depends on the install
+        raise SystemExit("reading .evtx files needs: pip install 'sigma2sql[evtx]'") from exc
+    try:
+        records: Any = iter(PyEvtxParser(path).records_json())
+    except (RuntimeError, OSError) as exc:  # not an EVTX file, or too short to be one
+        warnings.append(f"{path}: {exc}")
+        return
+    # The parser silently drops a chunk that is cut off, so check for that ourselves.
+    size = Path(path).stat().st_size
+    if size > EVTX_HEADER and (size - EVTX_HEADER) % EVTX_CHUNK:
+        warnings.append(f"{path}: file is truncated, events in its last chunk are not read")
+    errors = found = 0
+    while errors < MAX_EVTX_ERRORS:
+        try:
+            record = next(records)
+        except StopIteration:
+            break
+        except RuntimeError as exc:  # one damaged chunk; the parser moves on to the next
+            errors += 1
+            warnings.append(f"{path}: {exc}")
+            continue
+        found += 1
+        yield json.dumps(json.loads(record["data"]))
+    if errors >= MAX_EVTX_ERRORS:
+        warnings.append(f"{path}: gave up after {errors} damaged chunks")
+    if not found and not errors and size > EVTX_HEADER:
+        warnings.append(f"{path}: no events found")
 
 
 def hunt(
@@ -74,7 +145,8 @@ def hunt(
     `base` carries the field mapping and timestamp settings; table and dialect are set here.
     """
     con = connect()
-    events = load_logs(con, paths)
+    warnings: list[str] = []
+    events = load_logs(con, paths, warnings)
     base = base or Target()
     # All logs share one table here, so profile routes keep only their conditions.
     routes = tuple(replace(r, table=None) for r in base.routes)
@@ -97,7 +169,7 @@ def hunt(
             sample = [row[0] for row in con.execute(f"{shown} LIMIT {examples}").fetchall()]
         hits.append(Hit(item, count, sample))
     hits.sort(key=lambda h: (h.rank, -h.count, h.rule.title))
-    return Report(events, hits, len(items) - len(skipped), skipped)
+    return Report(events, hits, len(items) - len(skipped), skipped, warnings)
 
 
 def _query(item: Document, rules: Collection, target: Target) -> tuple[str, bool]:

@@ -51,7 +51,7 @@ jobs:
           grep -rlE 'condition:.*\| *count' --include=*.yml /tmp/sigma/unsupported /tmp/sigma/deprecated | xargs -I{} cp {} /tmp/agg/
           uv run python scripts/check_sigmahq.py /tmp/agg --dsn "$SIGMA2SQL_PG_DSN" --clickhouse "$SIGMA2SQL_CH_URL"
       - name: Run SigmaHQ regression samples (real events) through every rule
-        run: uv run python scripts/check_regression.py /tmp/sigma --clickhouse "$SIGMA2SQL_CH_URL"
+        run: uv run python scripts/check_regression.py /tmp/sigma --clickhouse "$SIGMA2SQL_CH_URL" --evtx
       - name: Compare with pySigma's SQLite backend on the same events
         run: uv run --with pysigma --with pysigma-backend-sqlite python scripts/diff_pysigma.py /tmp/sigma
 
@@ -64,3 +64,5 @@ jobs:
         with:
           path: examples/rules
           require-tests: "true"
+          sarif: rules.sarif
+      - run: python -c "import json; assert json.load(open('rules.sarif'))['version'] == '2.1.0'"

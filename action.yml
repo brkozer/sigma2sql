@@ -15,6 +15,9 @@ inputs:
   require-tests:
     description: Fail when a rule has no .match.jsonl or .nomatch.jsonl file
     default: "false"
+  sarif:
+    description: Write failures to this SARIF file, e.g. for github/codeql-action/upload-sarif
+    default: ""
   python-version:
     description: Python used to run sigma2sql
     default: "3.12"
@@ -34,10 +37,12 @@ runs:
         RULE_PATHS: ${{ inputs.path }}
         PROFILE: ${{ inputs.profile }}
         REQUIRE_TESTS: ${{ inputs.require-tests }}
+        SARIF: ${{ inputs.sarif }}
       run: |
         args=(check)
         read -ra paths <<< "$RULE_PATHS"
         args+=("${paths[@]}")
         if [ -n "$PROFILE" ]; then args+=(--profile "$PROFILE"); fi
         if [ "$REQUIRE_TESTS" = "true" ]; then args+=(--require-tests); fi
+        if [ -n "$SARIF" ]; then args+=(--sarif "$SARIF"); fi
         sigma2sql "${args[@]}"
