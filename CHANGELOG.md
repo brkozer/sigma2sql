@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-06)
 
 - ClickHouse dialect, tested on a real server: all SigmaHQ rules run, and the regression
   samples give the same results as on the other databases.

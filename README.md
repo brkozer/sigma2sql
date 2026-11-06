@@ -217,7 +217,7 @@ FAIL rules/office_spawns_shell.yml: Office application starting a shell: missed 
 The same check as a GitHub Action:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.2.0
+- uses: brkozer/sigma2sql@v0.3.0
   with:
     path: rules
     profile: sysmon          # optional
