@@ -17,7 +17,7 @@ from sigma2sql.collection import Collection, rule_files
 from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.hunt import LEVELS, Hit, Report, hunt
-from sigma2sql.profile import apply_profile, builtin_profiles, load_profile
+from sigma2sql.profile import apply_profile, builtin_profiles, load_placeholders, load_profile
 from sigma2sql.rule import Correlation, Document
 from sigma2sql.runner import matching_events, read_jsonl, rows
 from sigma2sql.runner import target as runner_target
@@ -98,6 +98,7 @@ def _field_options(p: argparse.ArgumentParser) -> None:
         "-p", "--profile", help="built-in profile name (see `sigma2sql profiles`) or YAML file"
     )
     p.add_argument("-m", "--mapping", type=Path, help="YAML map of Sigma field -> column/key")
+    p.add_argument("--placeholders", type=Path, help="YAML map of %%name%% placeholder to value(s)")
     p.add_argument("--nested", action="store_true", help="dotted names are nested JSON paths")
     p.add_argument("--timestamp-field", help="event time field for correlations")
     p.add_argument("--timestamp-format", choices=("iso", "epoch_s", "epoch_ms"))
@@ -118,6 +119,8 @@ def _target(args: argparse.Namespace) -> Target:
     )
     if args.profile:
         target = apply_profile(target, load_profile(args.profile))
+    if args.placeholders:
+        target = replace(target, placeholders=load_placeholders(args.placeholders))
     if args.nested:
         target = replace(target, nested=True)
     if args.timestamp_field:

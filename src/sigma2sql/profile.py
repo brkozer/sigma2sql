@@ -111,6 +111,20 @@ def apply_profile(target: Target, profile: dict[str, Any]) -> Target:
     )
 
 
+def load_placeholders(path: Path) -> dict[str, tuple[Any, ...]]:
+    """A YAML map of placeholder name to one value or a list of values."""
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError("expected a map of placeholder name to values")
+    out: dict[str, tuple[Any, ...]] = {}
+    for name, value in data.items():
+        values = value if isinstance(value, list) else [value]
+        if not values or not all(isinstance(v, str | int | float) for v in values):
+            raise ValueError(f"placeholder {name!r} needs a string, a number or a list of them")
+        out[str(name)] = tuple(values)
+    return out
+
+
 def _target_field(value: Any) -> str | tuple[str, ...]:
     if isinstance(value, list):
         if not value or not all(isinstance(v, str) for v in value):

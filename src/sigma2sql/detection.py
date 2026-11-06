@@ -6,6 +6,7 @@ import base64
 import ipaddress
 import itertools
 import re
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from sigma2sql.errors import RuleError, UnsupportedRule
@@ -34,24 +35,30 @@ KNOWN = (
     | set(COMPARE)
     | set(ENCODINGS)
     | BASE64
-    | {"all", "cased", "windash", "re", "i", "cidr", "exists", "fieldref"}
+    | {"all", "cased", "windash", "re", "i", "cidr", "exists", "fieldref", "expand"}
 )
 # Modifiers that make sense on keywords (searches over the whole event).
-KEYWORD_MODS = POSITION | set(ENCODINGS) | BASE64 | {"all", "cased", "windash", "re", "i"}
+KEYWORD_MODS = POSITION | set(ENCODINGS) | BASE64 | {"all", "cased", "windash", "re", "i", "expand"}
 
 # Characters Windows command-line tools accept in place of a leading dash.
 WINDASH = ("-", "/", "–", "—", "―")
 # A `-` or `/` that starts a word (same rule as pySigma).
 WINDASH_FLAG = re.compile(r"\B[-/]\b")
 MAX_WINDASH_FLAGS = 3
+# `%name%` in a value with the `expand` modifier (same rule as pySigma).
+PLACEHOLDER = re.compile(r"%([^%\\]+)%")
+
+# Placeholder name -> the values it stands for.
+Placeholders = Mapping[str, tuple[Any, ...]]
 
 
-def compile_search(name: str, value: Any) -> Expr:
+def compile_search(name: str, value: Any, placeholders: Placeholders | None = None) -> Expr:
+    known = placeholders or {}
     if isinstance(value, dict):
-        return _compile_map(name, value)
+        return _compile_map(name, value, known)
     if isinstance(value, list) and value:
         if all(isinstance(v, dict) for v in value):
-            return any_of([_compile_map(name, v) for v in value])
+            return any_of([_compile_map(name, v, known) for v in value])
         if all(_is_scalar(v) for v in value):
             return any_of([_keyword(name, v) for v in value])
     if _is_scalar(value) and value is not None:
@@ -70,13 +77,13 @@ def _keyword(name: str, value: Any) -> Expr:
     return StrMatch(None, SigmaString.parse(_as_text(value)).wrap(before=True, after=True))
 
 
-def _compile_map(name: str, mapping: dict[Any, Any]) -> Expr:
+def _compile_map(name: str, mapping: dict[Any, Any], placeholders: Placeholders) -> Expr:
     if not mapping:
         raise RuleError(f"search {name!r} is an empty map")
-    return all_of([_compile_field(str(key), value) for key, value in mapping.items()])
+    return all_of([_compile_field(str(k), v, placeholders) for k, v in mapping.items()])
 
 
-def _compile_field(key: str, value: Any) -> Expr:
+def _compile_field(key: str, value: Any, placeholders: Placeholders) -> Expr:
     name, *mods = key.split("|")
     for mod in mods:
         if mod not in KNOWN:
@@ -95,6 +102,8 @@ def _compile_field(key: str, value: Any) -> Expr:
     for v in values:
         if not _is_scalar(v):
             raise RuleError(f"field {label!r} has a nested value")
+    if "expand" in mods:
+        values = [e for v in values for e in _expand(v, placeholders)]
 
     items: list[Expr]
     if field is None and "re" in mods:
@@ -129,6 +138,25 @@ def _compile_field(key: str, value: Any) -> Expr:
         ]
 
     return all_of(items) if "all" in mods else any_of(items)
+
+
+def _expand(value: Any, placeholders: Placeholders) -> list[Any]:
+    """The value with every `%name%` replaced, once per combination of placeholder values."""
+    if not isinstance(value, str):
+        return [value]
+    pieces = PLACEHOLDER.split(value)  # literal text at even indexes, names at odd ones
+    names = pieces[1::2]
+    for name in names:
+        if name not in placeholders:
+            raise UnsupportedRule(f"placeholder %{name}% has no value (see --placeholders)")
+    if pieces[0::2] == ["", ""]:  # the whole value is one placeholder: keep value types
+        return list(placeholders[names[0]])
+    out: list[Any] = []
+    for combo in itertools.product(*(placeholders[n] for n in names)):
+        text = pieces[:]
+        text[1::2] = [_as_text(c) for c in combo]
+        out.append("".join(text))
+    return out
 
 
 def _value(field: str, value: Any, mods: list[str], position: str | None, cased: bool) -> Expr:

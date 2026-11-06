@@ -44,7 +44,7 @@ def test_keywords_need_somewhere_to_search() -> None:
         ("sel: {A|wide: x}\ncondition: sel", UnsupportedRule, "only supported together"),
         ("sel: {A|base64|base64offset: x}\ncondition: sel", RuleError, "conflicting"),
         ("sel: {'|cidr': x}\ncondition: sel", UnsupportedRule, "on keywords"),
-        ("sel: {A|expand: x}\ncondition: sel", UnsupportedRule, "expand"),
+        ("sel: {A|nosuch: x}\ncondition: sel", UnsupportedRule, "nosuch"),
         ("sel: {A: 1}\ncondition: other", RuleError, "unknown search"),
         ("sel: {A: 1}\ncondition: 1 of filter_*", RuleError, "does not match"),
         ("sel: {A: 1}\ncondition: (sel", RuleError, "too early"),

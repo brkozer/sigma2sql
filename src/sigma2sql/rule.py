@@ -10,7 +10,7 @@ from typing import Any, Literal
 import yaml
 
 from sigma2sql.condition import compile_condition
-from sigma2sql.detection import compile_search
+from sigma2sql.detection import Placeholders, compile_search
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.expr import Expr, any_of
 
@@ -49,13 +49,13 @@ class Rule:
     aggregation: Correlation | None = None
     path: Path | None = dataclasses.field(default=None, compare=False)
 
-    def compile(self) -> Expr:
+    def compile(self, placeholders: Placeholders | None = None) -> Expr:
         """Build the match tree. Searches the condition never uses are not compiled."""
         cache: dict[str, Expr] = {}
 
         def resolve(name: str) -> Expr:
             if name not in cache:
-                cache[name] = compile_search(name, self.searches[name])
+                cache[name] = compile_search(name, self.searches[name], placeholders)
             return cache[name]
 
         names = list(self.searches)

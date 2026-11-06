@@ -82,6 +82,8 @@ class Target:
     nested: bool = False
     default_field: str | tuple[str, ...] | None = None
     routes: tuple[Route, ...] = ()
+    # Values for `%name%` placeholders in rules that use the `expand` modifier.
+    placeholders: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
 
 
 def to_query(rule: Rule, target: Target, columns: str = "*") -> str:
@@ -97,7 +99,7 @@ def to_query(rule: Rule, target: Target, columns: str = "*") -> str:
 
 def source(rule: Rule, target: Target) -> tuple[str, str]:
     """The quoted table and WHERE clause for a rule, after logsource routing."""
-    where = to_where(rule.compile(), target)
+    where = to_where(rule.compile(target.placeholders), target)
     route = next((r for r in target.routes if r.applies(rule.logsource)), None)
     if route is None:
         return quote_table(target.table), where
