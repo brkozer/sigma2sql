@@ -29,6 +29,25 @@ TIMES = [{"When": "2026-11-01T03:12:45Z"}, {"When": "2027-01-01T23:59:00Z"}, {"O
 
 CASES: list[Case] = [
     (
+        "text that only looks like a number is not one",
+        "sel: {Port|lt: 100}\ncondition: sel",
+        [
+            {"Port": "10.0.0.1"},
+            {"Port": "1.2.3"},
+            {"Port": "1-2"},
+            {"Port": "1e"},
+            {"Port": "e5"},
+            {"Port": "-e5"},
+            {"Port": "1e2e3"},
+            {"Port": "50"},
+            {"Port": "-5"},
+            {"Port": "1e1"},
+            {"Port": "1.5"},
+            {"Port": "2.5E+1"},
+        ],
+        [7, 8, 9, 10, 11],
+    ),
+    (
         "endswith is case-insensitive",
         "sel: {Image|endswith: '\\cmd.exe'}\ncondition: sel",
         PROCS,

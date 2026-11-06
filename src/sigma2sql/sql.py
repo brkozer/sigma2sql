@@ -266,7 +266,7 @@ class Renderer:
         if self.d == "duckdb":
             return f"TRY_CAST({col} AS DOUBLE)"
         if self.d == "clickhouse":
-            return f"toFloat64OrNull({col})"
+            return _clickhouse_number(col)
         return _sqlite_number(col)
 
     def cast_number(self, expr: str) -> str:
@@ -275,7 +275,7 @@ class Renderer:
         if self.d == "duckdb":
             return f"TRY_CAST({expr} AS DOUBLE)"
         if self.d == "clickhouse":
-            return f"toFloat64OrNull(toString({expr}))"
+            return _clickhouse_number(f"toString({expr})")
         return _sqlite_number(expr)
 
     def epoch(self, col: str | None = None) -> str:
@@ -396,11 +396,31 @@ def _postgres_cast(expr: str, kind: str) -> str:
     return f"CASE WHEN pg_input_is_valid(({expr})::text, '{kind}') THEN ({expr})::{kind} END"
 
 
+# GLOB has no repetition, so a number is described by what it cannot look like: other
+# characters, two dots (10.0.0.1), a second exponent, a sign inside it (1-2), a dangling
+# exponent or sign (1e, e5).
+NOT_A_NUMBER = (
+    "*[^0-9.eE+-]*",
+    "*.*.*",
+    "*[eE]*[eE.]*",
+    "*[0-9.][+-]*",
+    "*[+-][+eE-]*",
+    "[eE]*",
+    "*[eE+-]",
+)
+
+
 def _sqlite_number(expr: str) -> str:
     """CAST alone turns text into 0, which would satisfy a `lt` comparison."""
     text = f"CAST({expr} AS TEXT)"
-    numeric = f"{text} GLOB '*[0-9]*' AND {text} NOT GLOB '*[^0-9.eE+-]*'"
-    return f"CASE WHEN {numeric} THEN CAST({expr} AS REAL) END"
+    checks = [f"{text} GLOB '*[0-9]*'"]
+    checks += [f"{text} NOT GLOB '{pattern}'" for pattern in NOT_A_NUMBER]
+    return f"CASE WHEN {' AND '.join(checks)} THEN CAST({expr} AS REAL) END"
+
+
+def _clickhouse_number(text: str) -> str:
+    """toFloat64OrNull reads an exponent with no digits before it, such as `e5`, as 0."""
+    return f"if(match({text}, '^[+-]?[.]?[0-9]'), toFloat64OrNull({text}), NULL)"
 
 
 def _uncased(item: Expr) -> TypeGuard[StrMatch]:

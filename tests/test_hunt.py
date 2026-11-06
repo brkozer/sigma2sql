@@ -155,6 +155,23 @@ def test_a_time_without_a_zone_is_utc(
     assert example["window_end"].startswith("2026-11-01 03:12:01")
 
 
+def test_a_negative_example_count_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        main(["hunt", RULES, "--logs", EVENTS, "-e", "-1"])
+    assert stopped.value.code == 2
+
+
+def test_a_second_log_without_events_keeps_the_first(
+    tmp_path: Path, fake_evtx: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    good = tmp_path / "good.evtx"
+    good.write_bytes(b"")
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("")
+    rule = str(EXAMPLES / "rules" / "office_spawns_shell.yml")
+    assert main(["hunt", rule, "--logs", str(good), str(bad)]) == 0
+
+
 def test_hunt_expands_evtx_globs(
     tmp_path: Path, fake_evtx: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:

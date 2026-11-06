@@ -38,9 +38,15 @@ def load(events: list[dict[str, Any]]) -> sqlite3.Connection:
     conn.execute(f"CREATE TABLE {TABLE} ({COLUMN} TEXT NOT NULL)")
     conn.executemany(
         f"INSERT INTO {TABLE} (rowid, {COLUMN}) VALUES (?, ?)",
-        [(i + 1, json.dumps(e)) for i, e in enumerate(events)],
+        [(i + 1, _stored(e)) for i, e in enumerate(events)],
     )
     return conn
+
+
+def _stored(event: dict[str, Any]) -> str:
+    """JSON as a log file holds it, so a keyword such as `Système` finds its text."""
+    text = json.dumps(event, ensure_ascii=False)
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def matching_events(
@@ -65,7 +71,10 @@ def read_jsonl(text: str) -> list[dict[str, Any]]:
     for n, line in enumerate(text.splitlines(), 1):
         if not line.strip():
             continue
-        event = json.loads(line)
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"line {n}: {exc}") from exc
         if not isinstance(event, dict):
             raise ValueError(f"line {n}: each event must be a JSON object")
         events.append(event)

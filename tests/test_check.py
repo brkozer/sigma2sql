@@ -16,6 +16,85 @@ detection:
 """
 
 
+BAD_REGEX = """title: bad regex
+detection:
+  s: {A|re: '('}
+  condition: s
+"""
+
+
+def test_invalid_regex_fails_only_that_rule(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "a.yml").write_text(BAD_REGEX)
+    (tmp_path / "a.match.jsonl").write_text('{"A": "x"}\n')
+    (tmp_path / "b.yml").write_text(RULE)
+    (tmp_path / "b.nomatch.jsonl").write_text('{"Image": "x"}\n')
+    sarif = tmp_path / "out.sarif"
+    assert main(["check", str(tmp_path), "--sarif", str(sarif)]) == 1
+    out = capsys.readouterr()
+    assert "regex invalid" in out.out and "ok   " in out.out
+    assert sarif.exists()
+
+
+def test_invalid_regex_in_test_is_exit_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rule = tmp_path / "a.yml"
+    rule.write_text(BAD_REGEX)
+    events = tmp_path / "e.jsonl"
+    events.write_text('{"A": "x"}\n')
+    assert main(["test", str(rule), str(events)]) == 2
+
+
+@pytest.mark.parametrize("command", ["check", "hunt"])
+def test_a_rule_path_that_leads_nowhere_is_an_error(
+    tmp_path: Path, command: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    logs = ["--logs", "x.jsonl"] if command == "hunt" else []
+    assert main([command, str(tmp_path / "missing"), *logs]) == 2
+    assert "no such file" in capsys.readouterr().err
+    assert main([command, str(tmp_path), *logs]) == 2
+    assert "no .yml or .yaml files" in capsys.readouterr().err
+
+
+def test_a_file_that_is_not_utf8_is_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "a.yml").write_bytes(RULE.encode("utf-16"))
+    (tmp_path / "a.match.jsonl").write_text("{}\n")
+    assert main(["check", str(tmp_path)]) == 1
+    assert "not a UTF-8 file" in capsys.readouterr().out
+
+
+def test_broken_test_file_keeps_the_other_failures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "cmd.yml").write_text(RULE)
+    (tmp_path / "cmd.match.jsonl").write_text('{"Image": "x"}\n')
+    (tmp_path / "cmd.nomatch.jsonl").write_text('{"Image": "x"}\n\nnot json\n')
+    assert main(["check", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert "missed" in out and "line 3" in out
+
+
+def test_non_ascii_keyword_matches(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rule = tmp_path / "a.yml"
+    rule.write_text(
+        "title: k\ndetection:\n  words: ['Système']\n  condition: words\n", encoding="utf-8"
+    )
+    events = tmp_path / "e.jsonl"
+    events.write_text('{"A": "AUTORITE NT\\\\Système"}\n', encoding="utf-8")
+    assert main(["test", str(rule), str(events), "--expect", "match"]) == 0
+
+
+def test_unwritable_sarif_is_exit_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "cmd.yml").write_text(RULE)
+    out = tmp_path / "no" / "such" / "dir.sarif"
+    assert main(["check", str(tmp_path), "--sarif", str(out)]) == 2
+    assert "Traceback" not in capsys.readouterr().err
+
+
 def test_examples_pass(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["check", str(EXAMPLES), "--require-tests"]) == 0
     out = capsys.readouterr()

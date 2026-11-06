@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
@@ -55,7 +56,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     hunt_p.add_argument(
         "-l", "--logs", nargs="+", required=True, help="log files; globs such as 'logs/*.json'"
     )
-    hunt_p.add_argument("-e", "--examples", type=int, default=0, help="matching events to show")
+    hunt_p.add_argument("-e", "--examples", type=_count, default=0, help="matching events to show")
     hunt_p.add_argument("--format", choices=("table", "json"), default="table")
     hunt_p.add_argument("--sarif", type=Path, help="also write the matches to this SARIF file")
     hunt_p.add_argument(
@@ -96,6 +97,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "check":
         return _check(args.paths, target, args.require_tests, args.sarif)
     return _test(args.rule, args.events, target, args.expect)
+
+
+def _count(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("must not be negative")
+    return value
 
 
 def _is_evtx(path: str) -> bool:
@@ -148,6 +156,22 @@ def _report_errors(col: Collection) -> None:
         print(f"skip {path}: {reason}", file=sys.stderr)
     for unused in col.unused_filters():
         print(f"warning: filter {unused.path or unused.title} applies to no rule", file=sys.stderr)
+
+
+def _no_rules(paths: list[Path]) -> bool:
+    """Report a rule path that leads nowhere: in CI a mistyped one must not pass."""
+    for path in paths:
+        if not path.exists():
+            print(f"sigma2sql: {path}: no such file or directory", file=sys.stderr)
+            return True
+    if not any(True for _ in rule_files(paths)):
+        print("sigma2sql: no .yml or .yaml files found", file=sys.stderr)
+        return True
+    return False
+
+
+def _query_failed(item: Document, exc: sqlite3.Error) -> str:
+    return f"{item.title}: SQLite could not run the query ({exc}); is a regex invalid?"
 
 
 def _sql(item: Document, col: Collection, target: Target) -> str:
@@ -207,6 +231,9 @@ def _test(path: Path, events_path: Path, target: Target, expect: str | None) -> 
         except (RuleError, UnsupportedRule) as exc:
             print(f"sigma2sql: {item.title}: {exc}", file=sys.stderr)
             return 2
+        except sqlite3.Error as exc:
+            print(f"sigma2sql: {_query_failed(item, exc)}", file=sys.stderr)
+            return 2
         print(f"{item.title}: {len(found)} {what}", file=sys.stderr)
         matched.append(bool(found))
     if expect == "match" and not all(matched):
@@ -216,12 +243,19 @@ def _test(path: Path, events_path: Path, target: Target, expect: str | None) -> 
     return 0
 
 
-def _write_sarif(path: Path, findings: list[Finding]) -> None:
+def _write_sarif(path: Path, findings: list[Finding]) -> bool:
     text = json.dumps(report(findings, version("sigma2sql")), indent=2)
-    path.write_text(text + "\n", encoding="utf-8")
+    try:
+        path.write_text(text + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"sigma2sql: {exc}", file=sys.stderr)
+        return False
+    return True
 
 
 def _check(paths: list[Path], target: Target, require_tests: bool, sarif: Path | None) -> int:
+    if _no_rules(paths):
+        return 2
     passed = failed = untested = 0
     findings: list[Finding] = []
 
@@ -250,8 +284,8 @@ def _check(paths: list[Path], target: Target, require_tests: bool, sarif: Path |
             passed += 1
             print(f"ok   {path}")
     print(f"{passed} passed, {failed} failed, {untested} without tests", file=sys.stderr)
-    if sarif:
-        _write_sarif(sarif, findings)
+    if sarif and not _write_sarif(sarif, findings):
+        return 2
     return 1 if failed else 0
 
 
@@ -265,7 +299,8 @@ def _check_rule(path: Path, cases: list[tuple[Path, bool]], target: Target) -> l
         try:
             events = read_jsonl(events_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            return [f"{events_path.name}: {exc}"]
+            problems.append(f"{events_path.name}: {exc}")
+            continue
         for item in items:
             try:
                 if isinstance(item, Correlation) or item.aggregation is not None:
@@ -281,6 +316,9 @@ def _check_rule(path: Path, cases: list[tuple[Path, bool]], target: Target) -> l
             except (RuleError, UnsupportedRule) as exc:
                 problems.append(f"{item.title}: {exc}")
                 continue
+            except sqlite3.Error as exc:
+                problems.append(_query_failed(item, exc))
+                continue
             wrong = sorted(set(range(len(events))) - hits if should_match else hits)
             if wrong:
                 lines = ", ".join(str(i + 1) for i in wrong)
@@ -290,6 +328,8 @@ def _check_rule(path: Path, cases: list[tuple[Path, bool]], target: Target) -> l
 
 
 def _hunt(args: argparse.Namespace, target: Target) -> int:
+    if _no_rules(args.rules):
+        return 2
     col = Collection.load(args.rules)
     _report_errors(col)
     try:
@@ -313,8 +353,8 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
     )
     if report_.other_logs:
         print(f"{report_.other_logs} rules are for other log sources", file=sys.stderr)
-    if args.sarif:
-        _write_sarif(args.sarif, [_hit_finding(h) for h in report_.hits])
+    if args.sarif and not _write_sarif(args.sarif, [_hit_finding(h) for h in report_.hits]):
+        return 2
     if args.fail_on:
         limit = LEVELS.index(args.fail_on)
         if any(h.rank <= limit for h in report_.hits):

@@ -26,6 +26,9 @@ class Collection:
             except (RuleError, UnsupportedRule, OSError) as exc:
                 col.errors.append((path, str(exc)))
                 continue
+            except UnicodeDecodeError:
+                col.errors.append((path, "not a UTF-8 file"))
+                continue
             for doc in docs:
                 if isinstance(doc, Correlation):
                     col.correlations.append(doc)

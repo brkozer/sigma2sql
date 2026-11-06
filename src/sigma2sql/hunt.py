@@ -82,6 +82,8 @@ def load_logs(con: Any, paths: list[str], warnings: list[str] | None = None) -> 
             raise ValueError(f"{path}: expected .json, .jsonl, .ndjson, .parquet, .csv or .evtx")
         con.execute(f"INSERT INTO {TABLE} {select}")
     count: int = con.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
+    if not count and warnings:
+        raise ValueError(f"no event could be read: {warnings[0]}")
     return count
 
 
@@ -96,14 +98,11 @@ def _load_evtx(con: Any, pattern: str, warnings: list[str]) -> None:
         raise ValueError(f"{pattern}: no such file")
     with tempfile.TemporaryDirectory() as tmp:
         lines = Path(tmp) / "events.jsonl"
-        with lines.open("w", encoding="utf-8") as out:
-            count = 0
+        # backslashreplace: a lone surrogate stays a JSON escape instead of ending the hunt.
+        with lines.open("w", encoding="utf-8", errors="backslashreplace") as out:
             for file in files:
                 for event in _evtx_events(file, warnings):
                     out.write(event + "\n")
-                    count += 1
-        if not count and warnings:
-            raise ValueError(f"{pattern}: no event could be read: {warnings[-1]}")
         source = literal(str(lines))
         select = f"SELECT json FROM read_json_objects({source}, format = 'newline_delimited')"
         con.execute(f"INSERT INTO {TABLE} {select}")
@@ -134,7 +133,7 @@ def _evtx_events(path: str, warnings: list[str]) -> Iterator[str]:
             warnings.append(f"{path}: {exc}")
             continue
         found += 1
-        yield json.dumps(json.loads(record["data"]))
+        yield json.dumps(json.loads(record["data"]), ensure_ascii=False)
     if errors >= MAX_EVTX_ERRORS:
         warnings.append(f"{path}: gave up after {errors} damaged chunks")
     if not found and not errors and size > EVTX_HEADER:
