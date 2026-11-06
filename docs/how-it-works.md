@@ -94,11 +94,13 @@ With `--nested`, the second column applies.
 | --- | --- | --- |
 | SQLite | `json_extract("data", '$."Image"')` | `json_extract("data", '$."process"."executable"')` |
 | PostgreSQL | `"data"->>'Image'` | `"data"#>>'{"process","executable"}'` |
-| DuckDB | `"data"->>'$."Image"'` | `"data"->>'$."process"."executable"'` |
+| DuckDB | `("data"->>'$."Image"')` | `("data"->>'$."process"."executable"')` |
 | ClickHouse | `JSONExtract("data", 'Image', 'Nullable(String)')` | `JSONExtract("data", 'process', 'executable', 'Nullable(String)')` |
 
 Without `--nested` a dotted name is one key, so `a.b` does not reach into `a`. When a profile
-lists several candidates for a field, they are wrapped in `COALESCE`.
+lists several candidates for a field, they are wrapped in `COALESCE`. The parentheses on DuckDB
+are there for versions before 2.0, which parse `a AND b->>c = d` as `(a AND b)->>c = d`. `hunt`
+works from DuckDB 1.3 on.
 
 All four give NULL for a missing key. On ClickHouse this is why the type is `Nullable(String)`,
 and numbers come back as text.
@@ -132,9 +134,11 @@ That text is the stored JSON, so keywords see its escaping. In the document, the
 `C:\Windows` is stored as `C:\\Windows`, and the keyword `C:\Windows` does not match it. The
 same applies to keys: a keyword can match a field name as well as a value.
 
-`hunt` keeps the text of a JSON log file. `test`, `check` and `hunt` on `.evtx` files write each
-event with Python's `json.dumps`, which escapes non-ASCII characters, so a keyword such as
-`café` can match in a JSON file and not in those. A search on a field is not affected.
+`test`, `check` and `hunt` on `.evtx` files write each event with Python's `json.dumps` and
+`ensure_ascii=False`, so non-ASCII characters stay as they are and a keyword such as `café`
+matches. A lone surrogate has no UTF-8 form, so it is replaced with `?`. `hunt` keeps the text
+of a JSON log file, so a `\u00e9` in that file stays an escape and the keyword does not match
+it. A search on a field is not affected.
 
 ### Numbers
 
@@ -145,7 +149,7 @@ In a plain column a number is compared as a number, `"EventID" = 4624`. JSON may
 | --- | --- |
 | SQLite | `CAST(json_extract("data", '$."EventID"') AS TEXT) = '4624'` |
 | PostgreSQL | `"data"->>'EventID' = '4624'` |
-| DuckDB | `"data"->>'$."EventID"' = '4624'` |
+| DuckDB | `("data"->>'$."EventID"') = '4624'` |
 | ClickHouse | `JSONExtract("data", 'EventID', 'Nullable(String)') = '4624'` |
 
 This applies to numbers written as numbers in the rule. A value quoted in the rule, `'4624'`,
@@ -159,14 +163,18 @@ error and not 0:
 
 | Dialect | `Port|lt: 1024` |
 | --- | --- |
-| SQLite | `CASE WHEN CAST(… AS TEXT) GLOB '*[0-9]*' AND CAST(… AS TEXT) NOT GLOB '*[^0-9.eE+-]*' THEN CAST(… AS REAL) END < 1024` |
+| SQLite | `CASE WHEN CAST(… AS TEXT) GLOB '*[0-9]*' AND CAST(… AS TEXT) NOT GLOB '*[^0-9.eE+-]*' AND … THEN CAST(… AS REAL) END < 1024` |
 | PostgreSQL | `CASE WHEN pg_input_is_valid((…)::text, 'numeric') THEN (…)::numeric END < 1024` |
 | DuckDB | `TRY_CAST(… AS DOUBLE) < 1024` |
-| ClickHouse | `toFloat64OrNull(…) < 1024` |
+| ClickHouse | `if(match(…, '^[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?$'), toFloat64OrNull(…), NULL) < 1024` |
 
-SQLite's `CAST` alone turns text into 0, which would satisfy `lt`. PostgreSQL would end the
-whole query on one bad cast, which is why `pg_input_is_valid` is there and why `cidr`,
-comparisons and correlations need PostgreSQL 16 or newer.
+SQLite's `CAST` alone turns text into 0, which would satisfy `lt`. `GLOB` has no repetition, so
+eight more `NOT GLOB` tests, left out above, describe what a number cannot look like: two dots,
+a second exponent, a misplaced sign, an exponent with no digit before or after it. ClickHouse's
+cast reads `e5` as 0 and `1e+` as 1, and takes `nan` and `inf`, which is why `match` comes
+first. PostgreSQL would end the whole query on one bad cast, which is why
+`pg_input_is_valid` is there and why `cidr`, comparisons and correlations need PostgreSQL 16 or
+newer.
 
 ### Regular expressions
 
@@ -304,7 +312,7 @@ no server, so a directory of logs can be searched with one command. `test` and `
 CI on small files, and SQLite comes with Python, so they need no extra packages.
 
 **Keep what can be read.** Logs from an incident are often damaged, so `hunt` reads what it can
-of `.evtx` files and warns about the rest. It fails only when a pattern gives no event at all.
+of `.evtx` files and warns about the rest. It fails only when the whole hunt gives no event.
 Other formats are read by DuckDB, and a file it cannot read ends the hunt.
 
 ## Contributing and development

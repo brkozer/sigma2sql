@@ -174,14 +174,15 @@ What happens next depends on the command:
 | Command | Result | Exit code |
 | --- | --- | --- |
 | `convert` | `skip` line on stderr | `1` |
-| `hunt` | `skip` line on stderr, counted as skipped | `0`, unless `--fail-on` applies to another rule |
+| `hunt` | `skip` line on stderr, counted as skipped | `0`, unless `--fail-on` applies to another rule; `2` if no rule could run |
 | `test` | error on stderr | `2` |
-| `check` | `FAIL` line for the rule; a rule with no test events is not compiled at all | `1`, or `0` with no test events |
+| `check` | `FAIL` line for the rule, also with no test events | `1` |
 
 ```console
 $ sigma2sql hunt dc_logon.yml --logs events.jsonl
 skip dc_logon.yml: placeholder %domain_controllers% has no value (see --placeholders)
 0 of 0 rules matched 3 events (1 rules skipped)
+sigma2sql: no rule could run
 $ sigma2sql test dc_logon.yml events.jsonl
 sigma2sql: Remote logon to a domain controller: placeholder %domain_controllers% has no value (see --placeholders)
 ```

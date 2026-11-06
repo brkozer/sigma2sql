@@ -229,7 +229,7 @@ Every key is optional, and an empty file is a valid profile.
 | `description` | string | empty | The line `sigma2sql profiles` shows for a built-in profile |
 | `json_column` | string | none | JSON column to read from; without it each field is a column |
 | `nested` | boolean | `false` | Split names on dots and follow them into nested JSON |
-| `timestamp` | string | `timestamp` | Field with the event time |
+| `timestamp` | string | `timestamp` | Column or path of the event time, see [Event time](#event-time) |
 | `timestamp_format` | string | `iso` | `iso`, `epoch_s` or `epoch_ms` |
 | `product` | string | none | See [product scoping](#product-scoping) |
 | `default_field` | string or list | none | Templates for fields not in `fields` |
@@ -246,6 +246,8 @@ Each Sigma field is looked up in this order, and the first step that knows the f
 2. The profile's `fields`.
 3. The profile's `default_field` templates.
 4. The field's own name.
+
+The event time has an order of its own, see [Event time](#event-time).
 
 A list in `fields` and several `default_field` templates both give a chain of candidates, which
 becomes `COALESCE`. The first one that is not NULL wins, so a key that is present with a JSON
@@ -299,54 +301,67 @@ in your own field names.
 
 ## Event time
 
-Correlations read the event time from the field `timestamp` names. `timestamp_format` says
+Correlations read the event time from the path `timestamp` names. `timestamp_format` says
 how to read it: `iso` for text such as `2026-11-01T03:12:01Z`, `epoch_s` and `epoch_ms` for
 numbers. The `minute` to `year` modifiers use the same format on the field they are written
 on. `--timestamp-field` and `--timestamp-format` override both keys.
 
-The `timestamp` name goes through the same [lookup](#field-lookup) as a Sigma field. If the
-profile has a `default_field`, the template rewrites it unless the name is listed in `fields`
-or `-m`. So give the name an entry that maps it to itself:
+The time is read in this order, and the first step that knows the field decides:
+
+1. An entry for the time field in the `-m` mapping file or the profile's `fields`.
+2. The path `timestamp` names and then, with a JSON column, the `default_field` templates. These
+   candidates become `COALESCE`, as for any field.
+
+With this profile and a JSON column, the time is read from `ts`, then from `attrs.ts`:
 
 ```yaml
 default_field: "attrs.{field}"
 timestamp: ts
-fields:
-  ts: ts
 ```
 
-!!! warning "Correlations with `evtx` and `ecs-winlogbeat`"
+Without a JSON column only the templates apply, so the same profile reads the column `attrs.ts`.
 
-    Both built-in profiles have a `default_field` and do not list their timestamp, so the time
-    is looked for in the wrong place and finds nothing. A correlation with a `timespan` or a
-    `count()` rule with a `timeframe` then gives no results and no error. That includes `hunt`
-    on `.evtx` files. Without a time window the rule still fires, with `first_seen` and
-    `last_seen` as `null`. Until that changes, pass a mapping file that maps the time field
-    to itself.
-
-Here `failed.yml` asks for three failed logons in five minutes, and `evtx.jsonl` holds three
-such events in the `evtx` layout:
-
-```yaml
-# evtx-time.yml
-"Event.System.TimeCreated.#attributes.SystemTime": "Event.System.TimeCreated.#attributes.SystemTime"
-```
+The full path in a built-in profile comes first, so `default_field` does not move it. Here
+`failed.yml` asks for three failed logons in five minutes, and `evtx.jsonl` holds three such
+events in the `evtx` layout:
 
 ```console
-$ sigma2sql hunt failed.yml --logs evtx.jsonl -p evtx
-0 of 1 rules matched 3 events (0 rules skipped)
-
-$ sigma2sql hunt failed.yml --logs evtx.jsonl -p evtx -m evtx-time.yml -e 1
+$ sigma2sql hunt failed.yml --logs evtx.jsonl -p evtx -e 1
 LEVEL         HITS  RULE
 high             1  Repeated failed logons  (failed.yml)
                       {"TargetUserName":"admin","window_start":"2026-11-01 03:12:00","window_end":"2026-11-01 03:12:02","value":3}
 1 of 1 rules matched 3 events (0 rules skipped)
 ```
 
-For `ecs-winlogbeat` the file is one line, `"@timestamp": "@timestamp"`.
+An entry in `fields` or `-m` wins over both. `moved.jsonl` holds the same events with the time
+in `Event.EventData.LogonTime`:
 
-`--timestamp-field` goes through the same lookup. With `-p evtx` it can reach a key under
-`Event.EventData`, such as Sysmon's `UtcTime`, but not one under `Event.System`.
+```yaml
+# moved.yml
+"Event.System.TimeCreated.#attributes.SystemTime": Event.EventData.LogonTime
+```
+
+```console
+$ sigma2sql hunt failed.yml --logs moved.jsonl -p evtx
+0 of 1 rules matched 3 events (0 rules skipped)
+
+$ sigma2sql hunt failed.yml --logs moved.jsonl -p evtx -m moved.yml -e 1
+LEVEL         HITS  RULE
+high             1  Repeated failed logons  (failed.yml)
+                      {"TargetUserName":"admin","window_start":"2026-11-01 03:12:00","window_end":"2026-11-01 03:12:02","value":3}
+1 of 1 rules matched 3 events (0 rules skipped)
+```
+
+`--timestamp-field` follows the same order. With `-p evtx` a name such as `LogonTime` or
+Sysmon's `UtcTime` is enough, as the `default_field` templates lead to `Event.EventData`:
+
+```console
+$ sigma2sql hunt failed.yml --logs moved.jsonl -p evtx --timestamp-field LogonTime -e 1
+LEVEL         HITS  RULE
+high             1  Repeated failed logons  (failed.yml)
+                      {"TargetUserName":"admin","window_start":"2026-11-01 03:12:00","window_end":"2026-11-01 03:12:02","value":3}
+1 of 1 rules matched 3 events (0 rules skipped)
+```
 
 ## Log sources
 
@@ -411,10 +426,6 @@ Only `hunt` scopes by product. `convert`, `test` and `check` take the rules you 
 | JSON column on `convert` | The profile's `json_column` over `--json-column` |
 | Table on `convert` | A log source's `table` over `-t` |
 | Table and JSON column on `hunt`, `test`, `check` | Their own, whatever the profile says |
-
-One exception: when `hunt` picks the `evtx` profile by itself for `.evtx` files, it applies the
-profile after the options. Its `timestamp` then replaces `--timestamp-field`. Pass `-p evtx` to
-keep the usual order. `-m` wins either way.
 
 ## Errors
 

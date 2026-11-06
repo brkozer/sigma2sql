@@ -16,7 +16,8 @@ rules/office_spawns_shell.match.jsonl     # every event must match
 rules/office_spawns_shell.nomatch.jsonl   # no event may match
 ```
 
-Either file is enough. A rule with neither counts as having no tests.
+Either file is enough. A rule with neither counts as having no tests, and `check` still loads
+and converts it.
 
 Events are written as they look in your logs. Each event is stored whole, and fields are read
 from it through the [profile](profiles.md) if you pass one, so a nested layout works the same
@@ -51,7 +52,10 @@ the same file. Otherwise the test fails with `correlation refers to unknown rule
 ## check
 
 `check` takes rule files or directories, finds each rule's test files and runs them.
-Directories are searched recursively for `.yml` and `.yaml` files.
+Directories are searched recursively for `.yml` and `.yaml` files, in upper or lower case.
+Every rule is loaded and converted, also one without test files, and its regular expressions
+are compiled. What fails there is a [failure](#failures), so adding `check` to a rule set can
+turn up rules that no test covers.
 
 ```console
 $ sigma2sql check examples/rules --require-tests
@@ -103,11 +107,10 @@ of a log source is ignored here, and so is `product`: `check` tests every rule i
 - **Other databases.** Tests run on SQLite. A rule that passes here can still be
   [unsupported elsewhere](features.md#what-is-not-supported), for example a lookahead on DuckDB.
   A few [value comparisons](features.md#numbers-booleans-and-strings) also differ.
-- **Rules without tests.** They are not loaded at all. A rule with no test files is counted as
-  `without tests` even if it is not valid Sigma, and a path that does not exist is treated
-  the same way. Use `--require-tests` to fail on both.
-- **Empty inputs.** A directory with no rule files gives `0 passed, 0 failed, 0 without tests`
-  and exit code 0, even with `--require-tests`. A test file with no events passes.
+- **Rules without tests.** They are loaded and converted, but nothing shows that they match the
+  right events. Such a rule is counted as `without tests`. Use `--require-tests` to fail on it.
+- **Empty test files.** A test file with no events passes. The exception is the match file of
+  a correlation or `count()` rule, which fails as it gives no result.
 
 ## Failures
 
@@ -127,11 +130,25 @@ FAIL rules/word_cmd.yml: cmd started by Word: matched word_cmd.nomatch.jsonl eve
 | --- | --- |
 | `missed FILE event(s) N` | These events in a match file did not match |
 | `matched FILE event(s) N` | These events in a nomatch file matched |
-| `no result for FILE` | A correlation gave nothing for its match file |
-| `N results for FILE` | A correlation gave results for its nomatch file |
+| `no result for FILE` | A correlation or `count()` rule gave nothing for its match file |
+| `N results for FILE` | A correlation or `count()` rule gave results for its nomatch file |
 | `no NAME.match.jsonl or .nomatch.jsonl` | No test files, with `--require-tests` |
 | `FILE: line N: each event must be a JSON object` | A line holds something else, such as a list |
-| anything else | The rule is invalid or unsupported, or a test file is not valid JSON. A JSON syntax error always says `line 1`, whichever line it is on |
+| `FILE: line N: nested too deeply` | The JSON on line N has more levels than Python's parser can follow |
+| `FILE: line N: MESSAGE` | Line N of the file is not valid JSON. `MESSAGE` is the JSON parser's, and the position in it counts within that line |
+| `TITLE: invalid regex 'PATTERN': MESSAGE` | A regular expression that Python cannot compile |
+| `TITLE: SQLite could not run the query: MESSAGE` | SQLite rejected the query or failed while running it |
+| anything else | The rule is invalid or unsupported, or the rule or test file is not UTF-8 |
+
+A test file that cannot be read is one more failure, and the rule's other test file still runs.
+Here the third line of the `.nomatch.jsonl` file has no closing brace:
+
+```console
+$ sigma2sql check rules
+FAIL rules/word_cmd.yml: cmd started by Word: missed word_cmd.match.jsonl event(s) 2
+FAIL rules/word_cmd.yml: word_cmd.nomatch.jsonl: line 3: Expecting ',' delimiter: line 1 column 99 (char 98)
+0 passed, 1 failed, 1 without tests
+```
 
 A correlation test that fails, with a single event in the match file and all three in the
 nomatch file:
@@ -143,26 +160,38 @@ FAIL brute_force.yml: Brute force against one account: 1 results for brute_force
 0 passed, 1 failed, 0 without tests
 ```
 
-A typing mistake in a modifier fails the test if the rule has test files, and
-`--require-tests` catches a rule that has none:
+A rule that cannot be loaded or converted fails with or without test files. Here `typo.yml` has
+a typing mistake in a modifier, and `nodetect.yml` has no test files and no `detection`:
 
 ```console
-$ sigma2sql check bad --require-tests
-FAIL bad/nodetect.yml: no nodetect.match.jsonl or .nomatch.jsonl
+$ sigma2sql check bad
+FAIL bad/nodetect.yml: missing 'detection' section
 FAIL bad/typo.yml: typo: modifier 'endswth' is not supported
-0 passed, 2 failed, 1 without tests
+0 passed, 2 failed, 0 without tests
 ```
 
-A regular expression that Python cannot compile is the exception: it is not reported as a
-failure, and the run ends there with a traceback and exit code 1.
+The same goes for a placeholder with no value, so [`--placeholders`](placeholders.md) is needed
+for such rules, and for a correlation in a different file from its rules.
+
+A regular expression that Python cannot compile fails too, whether or not an event reaches it.
+`test` reports the same problem and exits with code 2:
+
+```console
+$ sigma2sql check regex
+FAIL regex/bad_regex.yml: Unbalanced group: invalid regex '(': missing ), unterminated subpattern at position 0
+0 passed, 1 failed, 0 without tests
+$ sigma2sql test regex/bad_regex.yml regex/bad_regex.match.jsonl; echo $?
+sigma2sql: Unbalanced group: invalid regex '(': missing ), unterminated subpattern at position 0
+2
+```
 
 ### Exit codes
 
 | Code | `check` |
 | --- | --- |
 | 0 | No failures. Rules without tests do not count unless `--require-tests` is set |
-| 1 | At least one failure |
-| 2 | A bad option, profile, mapping or placeholder file |
+| 1 | At least one failure, which includes a rule that cannot be loaded or converted and an invalid regular expression |
+| 2 | A bad option, profile, mapping or placeholder file, a rule path that does not exist or holds no rule files, also next to a good path, or a `--sarif` file that cannot be written |
 
 ## test
 
@@ -195,7 +224,7 @@ Brute force against one account: 1 results
 | --- | --- |
 | 0 | The rule ran, and `--expect` was met if given |
 | 1 | `--expect` was not met |
-| 2 | The rule file or the events could not be read, the rule is invalid or unsupported, or an option, profile, mapping or placeholder file is bad |
+| 2 | The rule path does not exist or holds no rule files, the rule file or the events could not be read, the rule is invalid or unsupported, a regular expression is invalid, or an option, profile, mapping or placeholder file is bad |
 
 ```console
 $ sigma2sql test rules/word_cmd.yml rules/word_cmd.match.jsonl --expect none
@@ -212,7 +241,7 @@ the same ref and fails the step when `check` fails.
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: brkozer/sigma2sql@v0.3.0
+- uses: brkozer/sigma2sql@v0.3.1
   with:
     path: rules
     profile: sysmon
@@ -221,14 +250,25 @@ the same ref and fails the step when `check` fails.
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `path` | `rules` | Rule files or directories, separated by spaces |
+| `path` | `rules` | Rule files or directories, separated by spaces or newlines |
 | `profile` | empty | Built-in profile name or path to a profile YAML |
 | `require-tests` | `"false"` | Set to `"true"` to pass `--require-tests` |
 | `sarif` | empty | Write failures to this SARIF file |
 | `python-version` | `"3.12"` | Python used to run sigma2sql |
 
-Since `path` is split on spaces, a path that contains a space cannot be passed. Any other value
-of `require-tests` than the exact text `true` leaves it off. The action has no outputs.
+Several paths can go on one line or on a line each:
+
+```yaml
+- uses: brkozer/sigma2sql@v0.3.1
+  with:
+    path: |
+      rules/windows
+      rules/linux
+```
+
+Since `path` is split on spaces and newlines, a path that contains a space cannot be passed. Any
+other value of `require-tests` than the exact text `true` leaves it off. The action has no
+outputs.
 
 ## SARIF
 
@@ -278,7 +318,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: brkozer/sigma2sql@v0.3.0
+      - uses: brkozer/sigma2sql@v0.3.1
         with:
           path: rules
           profile: sysmon

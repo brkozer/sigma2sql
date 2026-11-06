@@ -436,15 +436,14 @@ An event whose time is missing or cannot be read has a NULL time. No query fails
 Such an event does not close a window and is in no window. Without a `timespan` it still
 counts, which is why `guest` above has a `value` of 3 and null times.
 
-A time with no zone is read as UTC by `test` and `check`, and in the machine's time zone by
-`hunt`, so the two can show different times for the same event.
+The field is a path in the event. With a JSON column, a profile's `default_field` is tried after
+that path, and a `-m` entry for the field wins over both. See
+[Event time](profiles.md#event-time).
 
-!!! warning "The `evtx` and `ecs-winlogbeat` profiles"
-
-    In this version these two profiles read the time from the wrong path, so correlations with
-    a `timespan` find nothing, with no error. This includes `.evtx` files. Without a `timespan`
-    the count is right, but `first_seen` and `last_seen` are null. A one-line mapping file
-    fixes it, see [Event time](profiles.md#event-time).
+A time with no zone is read as UTC by `hunt`, `test` and `check`, on any machine, so all three
+show the same time for the same event. A query you run elsewhere can differ: with a time that
+has no zone, PostgreSQL and DuckDB use the session's time zone, while SQLite and ClickHouse
+read it as UTC.
 
 ## Groups
 
@@ -747,7 +746,7 @@ The window is a self-join on a `base` query. All four dialects get the same stru
     $ sigma2sql convert event_count.yml --json-column data -d duckdb
     -- Three failed logons in a minute
     WITH base AS (
-      SELECT 'failed_logon' AS sigma_rule, epoch(TRY_CAST("data"->>'$."timestamp"' AS TIMESTAMPTZ)) AS sigma_ts, "data"->>'$."TargetUserName"' AS "g0" FROM "events" WHERE "data"->>'$."EventID"' = '4625'
+      SELECT 'failed_logon' AS sigma_rule, epoch(TRY_CAST(("data"->>'$."timestamp"') AS TIMESTAMPTZ)) AS sigma_ts, ("data"->>'$."TargetUserName"') AS "g0" FROM "events" WHERE ("data"->>'$."EventID"') = '4625'
     ),
     windows AS (SELECT DISTINCT "g0", sigma_ts FROM base WHERE sigma_ts IS NOT NULL)
     SELECT w."g0" AS "TargetUserName", make_timestamp(CAST((MIN(b.sigma_ts)) * 1000000 AS BIGINT)) AS window_start, make_timestamp(CAST((w.sigma_ts) * 1000000 AS BIGINT)) AS window_end, COUNT(*) AS value

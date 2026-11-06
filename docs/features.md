@@ -103,9 +103,10 @@ effects:
 - Backslashes and double quotes are escaped in JSON. On the event
   `{"Image": "C:\\Windows\\cmd.exe"}` the keyword `C:\Windows\cmd.exe` finds nothing, and
   `C:\\\\Windows\\\\cmd.exe`, which is the text as stored, matches.
-- `test`, `check` and `hunt` on `.evtx` files store non-ASCII characters as `\uXXXX`, so the
-  keyword `şifre` does not match there. For a JSON file `hunt` keeps the text as it is and does
-  match, if the file holds the characters themselves. A search on a field is not affected.
+- `hunt` keeps the text of a JSON file as it is, so a character written there as `\uXXXX` stays
+  an escape, and the keyword `şifre` does not match it. `test`, `check` and `hunt` on `.evtx`
+  files store the characters themselves, so it matches there. A search on a field is not
+  affected.
 
 ## Case sensitivity
 
@@ -144,11 +145,13 @@ SQLite as well. A stored boolean is 1 there, so `Enabled|contains: tru` does not
 So write numbers in rules as numbers. A `where` in a profile follows the same rules.
 
 In `lt`, `lte`, `gt` and `gte`, a JSON value that cannot be read as a number does not match, and
-it does not end the query. What counts as a number differs. PostgreSQL, DuckDB and ClickHouse
-try a cast and treat a failure as NULL. SQLite takes any text with at least one digit and
-nothing but digits, `.`, `e`, `E`, `+` and `-`, and reads as much of it as it can, so
-`"10.0.0.1"` is 10 and `"e5"` is 0. A JSON `true` is 1. This is `Port|lt: 100`, and `not` of the
-same search gives the opposite in every row:
+it does not end the query. What counts as a number differs a little. PostgreSQL and DuckDB try
+a cast and treat a failure as NULL. ClickHouse first matches the whole text against the form of
+a number, as its cast reads `"e5"` as 0 and `"1e+"` as 1, and takes `nan` and `inf`. SQLite has
+no such cast, so it looks at the text: digits, at most one `.`, at most one exponent with digits
+before and after it, and a sign only at the start or right after the `e`. It allows no spaces,
+and a JSON `true` is 1 there. This is `Port|lt: 100`, and `not` of the same search gives the
+opposite in every row:
 
 | Event | SQLite (`test`, `check`) | DuckDB (`hunt`) |
 | --- | --- | --- |
@@ -157,8 +160,10 @@ same search gives the opposite in every row:
 | `{"Port": "n/a"}` | no match | no match |
 | `{"Port": "-"}` | no match | no match |
 | `{}` | no match | no match |
-| `{"Port": "10.0.0.1"}` | match | no match |
-| `{"Port": "e5"}` | match | no match |
+| `{"Port": "10.0.0.1"}` | no match | no match |
+| `{"Port": "e5"}` | no match | no match |
+| `{"Port": ".e5"}` | no match | no match |
+| `{"Port": "1e+"}` | no match | no match |
 | `{"Port": true}` | match | no match |
 | `{"Port": " 80"}` | no match | match |
 
@@ -210,6 +215,7 @@ An empty string is a value, not a missing field. In a list, `null` is one of the
 | `utf16`, `wide` and the like without base64 | `wide is only supported together with base64` |
 | wildcards with base64 | `base64 modifiers cannot encode wildcards` |
 | keywords with no column to search | `keyword searches need a keyword column or a JSON column` |
+| a regular expression Python cannot compile, in `test` and `check` | `invalid regex '(': ...` |
 | lookaround or backreferences on RE2 | `duckdb (RE2) has no lookaround or backreferences: ...` |
 | a repetition count over the limit | `postgres regexes allow at most 255 repetitions: ...` |
 | a placeholder with no value | `placeholder %dc% has no value (see --placeholders)` |
@@ -257,8 +263,9 @@ converted 1/5 rules
 ```
 
 `hunt` names the skipped rules and counts them in its summary. Skipped rules do not change the
-exit code, so a CI job that must notice them has to read stderr. A query that DuckDB itself
-rejects is skipped the same way and does not end the hunt.
+exit code as long as one rule ran, so a CI job that must notice them has to read stderr. If
+none could run, the exit code is 2. A query that DuckDB itself rejects is skipped the same way
+and does not end the hunt.
 
 ```console
 $ sigma2sql hunt rules --logs events.jsonl
@@ -281,19 +288,18 @@ $ sigma2sql test rules/sequence.yml events.jsonl
 skip rules/sequence.yml: temporal_ordered correlations are not supported
 ```
 
-`check` turns the problem into a failed test with exit code 1, but only for a rule that has test
-files, because it does not load the others. See [what check does not
-cover](testing.md#what-check-does-not-cover).
+`check` turns the problem into a failed test with exit code 1, with or without test files. See
+[Failures](testing.md#failures).
 
 | Command | Rule it cannot use | Exit code |
 | --- | --- | --- |
 | `convert` | `skip PATH: reason`, the rest is converted | 1 |
-| `hunt` | `skip PATH: reason`, counted in the summary | unchanged |
+| `hunt` | `skip PATH: reason`, counted in the summary | unchanged, or 2 if no rule could run |
 | `test` | message, stops | 2 |
-| `check` | `FAIL PATH: reason` if the rule has test files | 1 |
+| `check` | `FAIL PATH: reason` | 1 |
 
-There are two gaps. A regular expression that does not compile is only found when it runs:
-`convert` prints it as written, `hunt` skips the rule when DuckDB rejects it, and `test` and
-`check` end with a Python traceback and exit code 1. And some modifiers are ignored instead of
-reported: position modifiers on keywords, and `contains`, `startswith`, `endswith` and `cased`
-with `fieldref`.
+There are two gaps. A regular expression that does not compile is not always found early.
+`test` and `check` compile every pattern first, so they report it even if no event reaches it,
+but `convert` prints it as written and `hunt` skips the rule only when DuckDB rejects it. And
+some modifiers are ignored instead of reported: position modifiers on keywords, and `contains`,
+`startswith`, `endswith` and `cased` with `fieldref`.

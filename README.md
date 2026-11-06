@@ -12,13 +12,13 @@ reach production. Full documentation: [brkozer.github.io/sigma2sql](https://brko
 
 - **All of SigmaHQ converts**: the 3807 rules in its five rule folders on SQLite, DuckDB and
   ClickHouse, 3804 on PostgreSQL, plus all 45 `count()` aggregation rules SigmaHQ keeps under
-  `unsupported/`. 27 of the 3807 use placeholders and need your values
+  `unsupported/` and `deprecated/`. 27 of the 3807 use placeholders and need your values
   ([details](#placeholders)). Every generated query is executed on all four databases in CI
   each week.
-- **Checked against real events**: all 477 of SigmaHQ's regression samples match as expected
-  on all four databases and straight from the original `.evtx` files, and on those events
-  sigma2sql agrees with pySigma on 3076 of 3078 rules; the two differences are IPv6 addresses
-  pySigma's text matching misses ([details](docs/correctness.md)).
+- **Checked against real events**: all 477 of SigmaHQ's regression samples match as expected on
+  SQLite, DuckDB and ClickHouse and from the original `.evtx` files through `hunt`, and on
+  those events sigma2sql agrees with pySigma on 3076 of 3078 rules; the two differences are
+  IPv6 addresses pySigma's text matching misses ([details](docs/correctness.md)).
 - **Correlations**: event counts, distinct counts, sums, averages, percentiles and temporal
   sequences over a sliding window, as plain SQL.
 - **Your schema**: profiles map Sigma fields to your columns or nested JSON (Sysmon, EVTX
@@ -114,9 +114,10 @@ correlation:
   condition: {gte: 3}
 ```
 
-Each result row holds the group values, the window's start and end and the counted value.
-Rules referenced by a correlation are not reported on their own unless it sets
-`generate: true`. `temporal_ordered` is not supported yet.
+Each result row holds the group values, the window's start and end (`first_seen` and
+`last_seen` without a `timespan`) and the counted value. Rules referenced by a correlation are
+not reported on their own unless it sets `generate: true`. `temporal_ordered` is not supported
+yet.
 
 ## Placeholders
 
@@ -154,7 +155,8 @@ filter:
 sigma2sql hunt rules/ filters/ --logs 'logs/*.evtx'
 ```
 
-`check` and `test` run a rule on its own, without filters.
+`check` and `test` load one rule file at a time, so filters in other files do not apply. A
+filter in the same file as the rule does.
 
 ## Profiles
 
@@ -207,17 +209,22 @@ ok   examples/rules/rdp_from_outside.yml
 4 passed, 0 failed, 0 without tests
 ```
 
-A failure names the rule, the file and the line, e.g. after adding an Outlook-spawned
-`cmd.exe` to the match file of a rule that only watches Word, Excel and PowerPoint:
+A failure names the rule, the file and the event's position in it, e.g. after adding an
+Outlook-spawned `cmd.exe` to the match file of a rule that only watches Word, Excel and
+PowerPoint:
 
 ```console
 FAIL rules/office_spawns_shell.yml: Office application starting a shell: missed office_spawns_shell.match.jsonl event(s) 1
 ```
 
+`check` also loads rules without test files, so a rule that cannot be loaded or converted, or
+an invalid regular expression, fails the run. A rule path that does not exist or holds no rule
+files exits with code 2, also next to a good path.
+
 The same check as a GitHub Action:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.3.0
+- uses: brkozer/sigma2sql@v0.3.1
   with:
     path: rules
     profile: sysmon          # optional
@@ -249,18 +256,18 @@ elsewhere, register `regexp(pattern, value)`, `cidr_match(value, network)` and, 
 percentiles, the aggregate `sigma_percentile(value, fraction)` yourself
 (`sigma2sql.runner.connect()` returns a SQLite connection with all three).<br>
 ² PostgreSQL rejects repetition counts above 255; those three rules are reported as
-unsupported rather than silently changed. Without `s`, `.` still matches a newline there.
-Values such as `-` in an address or number field are skipped with `pg_input_is_valid`, so
-`cidr`, comparisons and correlations need PostgreSQL 16 or newer.<br>
+unsupported rather than silently changed. Without `s` or `m`, `.` still matches a newline
+there. Values such as `-` in an address or number field are skipped with `pg_input_is_valid`,
+so `cidr`, comparisons and correlations need PostgreSQL 16 or newer.<br>
 ³ RE2: no lookaround or backreferences; such rules are reported as unsupported.<br>
 ⁴ Without `--json-column`, a missing value is only NULL in `Nullable` columns.<br>
 ⁵ Tested on ClickHouse 25.8. Correlations with `group-by` need `IS NOT DISTINCT FROM` in
 `JOIN ON`. One SigmaHQ rule, a list of driver hashes, is larger than the default
 `max_query_size` of 256 KiB and needs that setting raised.
 
-Matching is case-insensitive by default (ASCII in SQLite, as its `LIKE` and `NOCASE` are);
-values in a JSON column match whether they are stored as `4624` or `"4624"`, and `not` on a
-missing field is true, as Sigma intends.
+Matching is case-insensitive by default (ASCII in SQLite, as its `LIKE` and `NOCASE` are); a
+number in a rule matches a value in a JSON column whether it is stored as `4624` or `"4624"`,
+and `not` on a missing field is true, as Sigma intends.
 
 ## How it works
 
@@ -282,10 +289,12 @@ flowchart LR
 ## Library use
 
 ```python
+from pathlib import Path
+
 from sigma2sql import Target, load_rule_file, to_query
 from sigma2sql.profile import apply_profile, load_profile
 
-rule = load_rule_file("rule.yml")
+rule = load_rule_file(Path("rule.yml"))
 target = apply_profile(
     Target("postgres", "logs.windows", json_column="event"), load_profile("evtx")
 )

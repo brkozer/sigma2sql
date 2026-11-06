@@ -21,7 +21,7 @@ options:
   -h, --help            show this help message and exit
   --version             show program's version number and exit
 $ sigma2sql --version
-sigma2sql 0.3.0
+sigma2sql 0.3.1
 ```
 
 Results go to stdout. Skipped rules, warnings and summary lines go to stderr, so a command can
@@ -54,8 +54,9 @@ command line. Three details:
 The time modifiers (`minute`, `hour` and so on) read the field named in the rule, not
 `--timestamp-field`. `--timestamp-format` decides how they read it.
 
-With the `evtx` and `ecs-winlogbeat` profiles, a correlation with a `timespan` needs a mapping
-for the time field. See [Event time](profiles.md#event-time).
+`--timestamp-field` names a path in the event. With a JSON column, a profile's `default_field`
+is tried after that path, so `-p evtx --timestamp-field UtcTime` finds Sysmon's time. A
+`--mapping` entry for the name wins over both. See [Event time](profiles.md#event-time).
 
 ## convert
 
@@ -81,7 +82,7 @@ usage: sigma2sql convert [-h] [-d {sqlite,postgres,duckdb,clickhouse}] [-t TABLE
 The [shared options](#options-shared-by-the-rule-commands) apply too.
 
 A directory is searched recursively for `.yml` and `.yaml` files, in sorted order. The suffix
-must be in lower case there. A file named on the command line is read whatever its suffix.
+can be in upper or lower case. A file named on the command line is read whatever its suffix.
 Filter files among the paths are applied to the rules they cover, see [Filters](filters.md).
 
 Each query is printed after a comment with the rule's title and id:
@@ -178,12 +179,18 @@ Only the given file is loaded. A correlation in `test` therefore needs its rules
 file, and filters in other files are not applied. Log source conditions from a profile do
 apply, and a profile's `table` is ignored.
 
-Without `--expect` the exit code does not depend on what matched. A rule that cannot be
-converted, a rule file that cannot be loaded and an events file that cannot be read all exit 2:
+Without `--expect` the exit code does not depend on what matched. A rule path that does not
+exist or holds no rule files, a rule that cannot be converted, a rule file that cannot be
+loaded, an invalid regular expression and an events file that cannot be read all exit 2. A
+regular expression is checked before any event is looked at:
 
 ```console
 $ sigma2sql test bad.yml examples/events.jsonl
 sigma2sql: Broken: modifier 'nosuchmod' is not supported
+$ sigma2sql test regex/bad_regex.yml examples/events.jsonl
+sigma2sql: Unbalanced group: invalid regex '(': missing ), unterminated subpattern at position 0
+$ sigma2sql test missing.yml examples/events.jsonl
+sigma2sql: missing.yml: no such file or directory
 $ sigma2sql test cmd.yml not-an-object.jsonl
 sigma2sql: line 1: each event must be a JSON object
 ```
@@ -208,7 +215,7 @@ usage: sigma2sql hunt [-h] -l LOGS [LOGS ...] [-e EXAMPLES] [--format {table,jso
 | --- | --- | --- |
 | `rules` | required | rule files or directories, one or more, filter files included |
 | `-l, --logs` | required | log files, one or more; globs such as `'logs/*.json'` |
-| `-e, --examples N` | `0` | show up to N matching events or correlation results per rule |
+| `-e, --examples N` | `0` | show up to N matching events or correlation results per rule; a negative N is an error |
 | `--format` | `table` | `table` or `json` |
 | `--sarif FILE` | none | also write the matches to this SARIF file |
 | `--fail-on LEVEL` | none | exit 1 if a rule at this level or above matches: `critical`, `high`, `medium`, `low` or `informational` |
@@ -231,8 +238,9 @@ JSON. Because of that a profile's `table` is ignored in `hunt`; its `where` cond
 apply.
 
 If any path ends in `.evtx` and you pass no `--profile`, the `evtx` profile is used for the
-whole hunt. It is applied after the other options, so `--timestamp-field` has no effect then.
-Pass `-p evtx` to use that option.
+whole hunt. If other logs are among the paths, `hunt` warns with `all logs are read with the
+evtx profile`. `--timestamp-field` and the other options win over the profile, as they do over
+any profile.
 
 ### Output
 
@@ -270,8 +278,8 @@ $ sigma2sql hunt keyword.yml --logs examples/events.jsonl -p sysmon
 ### Skipped rules and damaged logs
 
 A rule that cannot be converted, or that DuckDB rejects, is named on stderr and the hunt goes
-on. Skipped rules do not change the exit code, so a CI job that depends on `hunt` should watch
-that count as well.
+on. Skipped rules do not change the exit code as long as one rule ran, so a CI job that depends
+on `hunt` should watch that count as well.
 
 ```console
 $ sigma2sql hunt bad.yml examples/rules/rdp_from_outside.yml --logs examples/events.jsonl
@@ -281,11 +289,20 @@ medium           1  Successful RDP logon from a public address  (examples/rules/
 1 of 1 rules matched 12 events (1 rules skipped)
 ```
 
+If rules were skipped and none could run, the hunt ends with exit code 2:
+
+```console
+$ sigma2sql hunt bad.yml --logs examples/events.jsonl; echo $?
+skip bad.yml: modifier 'nosuchmod' is not supported
+0 of 0 rules matched 12 events (1 rules skipped)
+sigma2sql: no rule could run
+2
+```
+
 Logs from an incident are often damaged, so `.evtx` files are read as far as possible, with a
-warning for what is lost. If that leaves a `--logs` value with no event at all, the hunt ends
-with exit code 2, even when another value gave events. See [Damaged
-files](hunt.md#damaged-files). Other log formats are read by DuckDB, and a file it cannot read
-ends the hunt with exit code 2.
+warning for what is lost. If that leaves the whole hunt with no event at all, it ends with exit
+code 2. See [Damaged files](hunt.md#damaged-files). Other log formats are read by DuckDB, and a
+file it cannot read ends the hunt with exit code 2.
 
 ### Fail levels and SARIF
 
@@ -303,7 +320,8 @@ $ sigma2sql hunt examples/rules --logs examples/events.jsonl --fail-on high > /d
 ```
 
 `--sarif FILE` writes a SARIF 2.1.0 report with one result per matching rule. See
-[`--sarif`](hunt.md#-sarif) for its rule ids and levels.
+[`--sarif`](hunt.md#-sarif) for its rule ids and levels. A file that cannot be written gives
+exit code 2.
 
 ## check
 
@@ -350,7 +368,16 @@ FAIL rules/office_spawns_shell.yml: Office application starting a shell: missed 
 0 passed, 1 failed, 0 without tests
 ```
 
-Rule files without test events are counted, and fail only with `--require-tests`:
+Every rule is loaded and converted, also one without test events, and its regular expressions
+are compiled. A failure there fails the run, even if no event reaches the pattern:
+
+```console
+$ sigma2sql check regex
+FAIL regex/bad_regex.yml: Unbalanced group: invalid regex '(': missing ), unterminated subpattern at position 0
+0 passed, 1 failed, 0 without tests
+```
+
+Otherwise rule files without test events are counted, and fail only with `--require-tests`:
 
 ```console
 $ sigma2sql check keyword.yml
@@ -366,11 +393,22 @@ Some details follow from each rule file being checked on its own:
   rules`.
 - Filters in other files are not applied. A filter file in a checked directory counts as a rule
   file, so `--require-tests` asks for test events for it.
-- A path that does not exist has no test files either. It is counted as `without tests`, and
-  without `--require-tests` the command still exits 0.
+
+Each rule path that does not exist or holds no rule files is named and ends the run, also next
+to a good path, so a mistyped path in CI does not pass:
+
+```console
+$ sigma2sql check missing-rules; echo $?
+sigma2sql: missing-rules: no such file or directory
+2
+$ sigma2sql check examples/rules empty; echo $?
+sigma2sql: empty: no .yml or .yaml files found
+2
+```
 
 `--sarif FILE` writes one result per problem, all with the rule id `rule-test` and level
-`error`. The file is written when every rule passes too, with an empty result list.
+`error`. The file is written when every rule passes too, with an empty result list. A file that
+cannot be written gives exit code 2.
 
 The repository is also a GitHub Action that runs `check`, see [Test
 rules](testing.md#github-action).
@@ -391,12 +429,14 @@ sysmon          Sysmon events with their original field names; each Sigma catego
 
 | Code | `convert` | `test` | `hunt` | `check` |
 | --- | --- | --- | --- | --- |
-| 0 | every rule converted | ran; with `--expect`, the expectation held | ran; nothing reached `--fail-on` | every tested rule passed |
-| 1 | a rule or file was skipped | `--expect` did not hold | a rule reached `--fail-on`, or the `duckdb` or `evtx` package is missing | a rule failed, or has no tests with `--require-tests` |
-| 2 | no rules found, also when the paths hold only filters | the rule or events could not be read or converted | a log could not be read | |
+| 0 | every rule converted | ran; with `--expect`, the expectation held | ran; nothing reached `--fail-on` | every rule loaded and every tested rule passed |
+| 1 | a rule or file was skipped | `--expect` did not hold | a rule reached `--fail-on`, or the `duckdb` or `evtx` package is missing | a rule failed, could not be loaded or converted, or has no tests with `--require-tests` |
+| 2 | no rules found, also when the paths hold only filters | no rules found, the rule or events could not be read, converted or run, or a regular expression is invalid | no rules found, no rule could run, a log could not be read, damaged `.evtx` files gave no event at all, or the `--sarif` file could not be written | no rules found, or the `--sarif` file could not be written |
 
 For all four commands, code 2 also covers bad usage and a profile, mapping or placeholders file
-that cannot be loaded. `profiles`, `--help` and `--version` exit 0.
+that cannot be loaded. For `test`, `hunt` and `check`, "no rules found" means a rule path that
+does not exist or holds no rule files, also next to a good path; a file with only filters
+counts as a rule file there. `profiles`, `--help` and `--version` exit 0.
 
 ```console
 $ sigma2sql convert cmd.yml -p nosuch; echo $?

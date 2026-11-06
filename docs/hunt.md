@@ -16,7 +16,7 @@ medium           1  Successful RDP logon from a public address  (examples/rules/
 4 of 4 rules matched 12 events (0 rules skipped)
 ```
 
-It needs the `duckdb` extra, and `evtx` for `.evtx` files:
+It needs the `duckdb` extra, which asks for DuckDB 1.3 or newer, and `evtx` for `.evtx` files:
 
 ```bash
 pip install "sigma2sql[duckdb,evtx]"
@@ -27,8 +27,8 @@ Without them, `hunt` prints the `pip install` line it needs and exits with code 
 ## Rules
 
 Give rule files, directories or both, before `--logs`. A directory is searched recursively for
-`.yml` and `.yaml` files. A file can hold several documents, as `brute_force.yml` does: a rule
-and a [correlation](correlations.md) over it.
+`.yml` and `.yaml` files, in upper or lower case. A file can hold several documents, as
+`brute_force.yml` does: a rule and a [correlation](correlations.md) over it.
 
 A rule that a correlation refers to only feeds that correlation, unless the correlation sets
 `generate: true`. That is why the four files above give four results and not five.
@@ -58,10 +58,9 @@ sigma2sql: logs/app.log: expected .json, .jsonl, .ndjson, .parquet, .csv or .evt
 
 `.tsv` works too, although the message leaves it out.
 
-Paths can be globs. Quote them so sigma2sql expands them and not your shell; for `.evtx` this
-[makes a difference](#several-files). In a quoted glob, `**` crosses directories for every
-format except `.evtx`, where it works like a single `*`. A glob has to end in one of the
-extensions above, so `'logs/*'` is refused like `logs/app.log`.
+Paths can be globs. Quote them so sigma2sql expands them and not your shell. In a quoted glob,
+`**` crosses directories for every format except `.evtx`, where it works like a single `*`. A
+glob has to end in one of the extensions above, so `'logs/*'` is refused like `logs/app.log`.
 
 A missing file is an error, and so is a glob that matches nothing. One malformed line in a JSON
 file also stops the hunt with code 2. The message comes from DuckDB and gives the file and a
@@ -126,7 +125,9 @@ matched: the number of matches per rule is in the `HITS` column.
 ### `--examples`
 
 `-e N`, `--examples N` shows up to N results under each rule. For a detection rule these are
-the events as stored. For a correlation they are result rows. They come in no fixed order.
+the events as stored. For a correlation they are result rows. They come in no fixed order. If
+the query for the examples fails, for example on a time out of range in one result row, a
+warning names the rule and the hit stays in the report without examples.
 
 ```console
 $ sigma2sql hunt more/encoded_powershell.yml --logs logs/process.csv --examples 1
@@ -176,8 +177,8 @@ C:\Windows\System32\Curl.exe  -s -A "HttpBrowser/1.0" -m3 www.google.com
 
 `--sarif FILE` also writes a SARIF 2.1.0 report, whatever `--format` says. Each rule that
 matched gives one result, located at the rule file. The parent directory must exist. If the
-file cannot be written, the run ends with a Python traceback and code 1, after the report was
-printed.
+file cannot be written, the report is still printed and the run ends with code 2, whatever
+`--fail-on` says.
 
 ```console
 $ sigma2sql hunt examples/rules --logs examples/events.jsonl --sarif hits.sarif
@@ -252,10 +253,21 @@ medium           1  Curl.EXE Execution With Custom UserAgent  (rules/proc_creati
 
 The last line is [product scoping](#product-scoping) at work.
 
-The choice of profile applies to the whole run. If you mix `.evtx` files with flat JSON events,
-the `evtx` profile looks for `Event.System` and `Event.EventData` in those events too, and
-rules will not match them. Hunt them in separate runs. For the same reason, passing another
-profile for `.evtx` files only makes sense if it fits their layout.
+The choice of profile applies to the whole run. If you mix `.evtx` files with other logs and
+pass no `--profile`, a warning says so:
+
+```console
+$ sigma2sql hunt rules --logs logs/curl.evtx logs/events.jsonl
+warning: all logs are read with the evtx profile
+LEVEL         HITS  RULE
+medium           1  Curl.EXE Execution With Custom UserAgent  (rules/proc_creation_win_curl_useragent.yml)
+1 of 1 rules matched 13 events (0 rules skipped)
+1 rules are for other log sources
+```
+
+The `evtx` profile looks for `Event.System` and `Event.EventData` in those other events too, and
+rules will not match flat JSON events. Hunt them in separate runs. For the same reason, passing
+another profile for `.evtx` files only makes sense if it fits their layout.
 
 ### Damaged files
 
@@ -269,7 +281,7 @@ reported. A warning does not change the exit code.
 | 100 damaged chunks in one file | `gave up after 100 damaged chunks`, the rest of that file is not read |
 | Not an EVTX file, or too short for its header | warning, the file is left out |
 | Valid header and no chunks | no warning, the file holds no events |
-| No event from a `--logs` value, and at least one warning | error, exit code 2 |
+| No event from the whole hunt, and at least one warning | error, exit code 2 |
 
 A file with its second chunk cut off, for example:
 
@@ -295,11 +307,11 @@ medium           1  Curl.EXE Execution With Custom UserAgent  (rules/proc_creati
 
 ### Several files
 
-The last row of the table is decided per `--logs` value, not per run. With a quoted glob, a bad
-file among good ones is a warning:
+The last row of the table is decided for the whole hunt, over all `--logs` values. A bad file
+among good ones is a warning, whether sigma2sql or the shell expands the glob:
 
 ```console
-$ sigma2sql hunt rules --logs 'mixed/*.evtx'
+$ sigma2sql hunt rules --logs mixed/*.evtx
 warning: mixed/garbage.evtx: An error occurred while trying to deserialize evtx stream.: Invalid EVTX file header magic, expected `ElfFile0`, found `[AB, 74,  C, 8B, E2, 3A, CA, 6B]`
 LEVEL         HITS  RULE
 medium           1  Curl.EXE Execution With Custom UserAgent  (rules/proc_creation_win_curl_useragent.yml)
@@ -307,16 +319,12 @@ medium           1  Curl.EXE Execution With Custom UserAgent  (rules/proc_creati
 1 rules are for other log sources
 ```
 
-Without the quotes the shell expands the glob, each file becomes its own value, and the bad file
-ends the hunt:
+If no file gave an event, the hunt ends with code 2:
 
 ```console
-$ sigma2sql hunt rules --logs mixed/*.evtx
-sigma2sql: mixed/garbage.evtx: no event could be read: mixed/garbage.evtx: An error occurred while trying to deserialize evtx stream.: Invalid EVTX file header magic, expected `ElfFile0`, found `[AB, 74,  C, 8B, E2, 3A, CA, 6B]`
+$ sigma2sql hunt rules --logs mixed/garbage.evtx
+sigma2sql: no event could be read: mixed/garbage.evtx: An error occurred while trying to deserialize evtx stream.: Invalid EVTX file header magic, expected `ElfFile0`, found `[AB, 74,  C, 8B, E2, 3A, CA, 6B]`
 ```
-
-!!! note
-    For a folder of logs from an incident, always quote the glob.
 
 ## Product scoping
 
@@ -348,8 +356,8 @@ has a worked example.
 
 Correlations and `count()` aggregations run like other rules. Events are placed in time by the
 `timestamp` field, read as ISO 8601, unless a profile or the options above say otherwise. A
-time without a zone is read in the machine's time zone, and result rows show UTC. Sysmon's
-`UtcTime` has no zone, so run `hunt` with `TZ=UTC` to see it as it is in the log.
+time without a zone is read as UTC on any machine, and result rows show UTC. Sysmon's `UtcTime`
+has no zone, so it comes out as it is in the log.
 
 Check this setting if a correlation stays silent. With a `timespan`, a time field that the
 events do not have gives no results and no warning:
@@ -374,32 +382,30 @@ high             2  Brute force against one account  (more/brute_force.yml)
 
 ### Time windows on `.evtx` files
 
-The `evtx` profile names `Event.System.TimeCreated.#attributes.SystemTime` as its time field,
-but its fallback for unmapped fields is applied to that name as well. The query then looks
-under `Event.EventData` and finds no time, so a correlation with a `timespan` stays silent on
-`.evtx` files. Map the field to itself to get around this. `corr/` holds a correlation over the
-curl event from above:
+The `evtx` profile reads the event time from `Event.System.TimeCreated.#attributes.SystemTime`,
+so a correlation works on `.evtx` files with no further options. `corr/` holds a correlation
+over the curl event from above:
 
 ```console
-$ sigma2sql hunt corr --logs logs/curl.evtx
-0 of 1 rules matched 1 events (0 rules skipped)
-$ cat time.yml
-"Event.System.TimeCreated.#attributes.SystemTime": "Event.System.TimeCreated.#attributes.SystemTime"
-$ sigma2sql hunt corr --logs logs/curl.evtx --mapping time.yml --examples 1
+$ sigma2sql hunt corr --logs logs/curl.evtx --examples 1
 LEVEL         HITS  RULE
 low              1  Curl started within five minutes  (corr/curl_seen.yml)
                       {"window_start":"2026-08-11 07:52:33.442301","window_end":"2026-08-11 07:52:33.442301","value":1}
 1 of 1 rules matched 1 events (0 rules skipped)
 ```
 
-The `ecs-winlogbeat` profile has the same problem with `@timestamp`, and the same fix works.
-Without a `timespan` a correlation or `count()` aggregation still gives results, with
-`first_seen` and `last_seen` empty. [Event time](profiles.md#event-time) has the details.
+`--timestamp-field` wins over the profile. The name is read as a path in the event and then,
+like a Sigma field, through the profile's `default_field`, so Sysmon's `UtcTime` needs no path:
 
-`--timestamp-field` is ignored when the `evtx` profile was chosen for you, as the profile is
-applied after the options. Pass `--profile evtx` as well. The name then goes through the same
-fallback, so it can reach a key under `Event.EventData`, such as Sysmon's `UtcTime`, but not one
-under `Event.System`.
+```console
+$ sigma2sql hunt corr --logs logs/curl.evtx --timestamp-field UtcTime --examples 1
+LEVEL         HITS  RULE
+low              1  Curl started within five minutes  (corr/curl_seen.yml)
+                      {"window_start":"2026-08-11 07:52:33.438","window_end":"2026-08-11 07:52:33.438","value":1}
+1 of 1 rules matched 1 events (0 rules skipped)
+```
+
+[Event time](profiles.md#event-time) has the details.
 
 ## Skipped rules
 
@@ -417,30 +423,38 @@ high             2  PowerShell started with an encoded command  (more/encoded_po
 1 of 1 rules matched 12 events (4 rules skipped)
 ```
 
-The reasons are rule files that do not load (bad YAML, an empty file), conditions that name an
-unknown search, Sigma features that are not supported, such as `temporal_ordered`, placeholders
-without a value, patterns RE2 cannot run, and correlations that refer to rules that were not
-loaded. If DuckDB itself rejects a query, the first line of its error is the reason. A bad rule
-does not end the hunt, with one exception: a rule file that is not valid UTF-8 ends the run with
-a Python traceback and code 1.
+The reasons are rule files that do not load (bad YAML, an empty file, a file that is not
+UTF-8), conditions that name an unknown search, Sigma features that are not supported, such as
+`temporal_ordered`, placeholders without a value, patterns RE2 cannot run, and correlations
+that refer to rules that were not loaded. If DuckDB itself rejects a query, the first line of
+its error is the reason. A bad rule does not end the hunt.
 
-Skipped rules do not change the exit code, and that includes a rule path that does not exist:
+Skipped rules do not change the exit code as long as one rule ran, so in CI look at the summary
+as well. If rules were skipped and none could run, the hunt ends with code 2. Rules left out by
+[product scoping](#product-scoping) are not skipped, so a run that only has those is not an
+error. Each rule path that does not exist or holds no rule files is an error too, also next to
+a good path:
 
 ```console
-$ sigma2sql hunt missing-rules --logs logs/process.csv
-skip missing-rules: [Errno 2] No such file or directory: 'missing-rules'
+$ sigma2sql hunt broken/typo.yml --logs logs/process.csv; echo $?
+skip broken/typo.yml: condition refers to unknown search 'missing'
 0 of 0 rules matched 2 events (1 rules skipped)
+sigma2sql: no rule could run
+2
+$ sigma2sql hunt more/encoded_powershell.yml missing-rules --logs logs/process.csv; echo $?
+sigma2sql: missing-rules: no such file or directory
+2
+$ sigma2sql hunt empty --logs logs/process.csv; echo $?
+sigma2sql: empty: no .yml or .yaml files found
+2
 ```
-
-An empty rule directory gives `0 of 0 rules` with no `skip` line at all. In CI, look at the
-summary as well as the exit code.
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| 0 | The hunt finished. This includes runs with no match, with warnings and with skipped rules. |
-| 1 | A rule at or above `--fail-on` matched. Also when the `duckdb` or `evtx` extra is missing, and after a Python traceback: a `--sarif` file that cannot be written, or a rule file that is not UTF-8. |
-| 2 | The hunt could not run: bad arguments, an unknown profile, an unreadable mapping or placeholder file, an unsupported file type, a missing or unreadable log file, malformed JSON, a CSV file DuckDB cannot read, or a `--logs` value that gave no `.evtx` event and a warning. |
+| 0 | The hunt finished. This includes runs with no match, with warnings and, if a rule ran, with skipped rules. |
+| 1 | A rule at or above `--fail-on` matched. Also when the `duckdb` or `evtx` extra is missing. |
+| 2 | The hunt could not run: bad arguments, an unknown profile, an unreadable mapping or placeholder file, a rule path that does not exist or holds no rule files, also next to a good path, no rule that could run, an unsupported file type, a missing or unreadable log file, malformed JSON, a CSV file DuckDB cannot read, a hunt that read no event and gave a warning, or a `--sarif` file that cannot be written. |
 
 All options are listed under [Command line](cli.md).

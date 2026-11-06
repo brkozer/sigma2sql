@@ -80,8 +80,6 @@ in CI each week.
   are [ignored without a report](features.md#how-it-is-reported).
 - `hunt` uses DuckDB, so RE2 applies there: patterns with lookaround or backreferences are
   skipped.
-- On `.evtx` files, a correlation with a `timespan` finds nothing until you map the time field.
-  See [Time windows on `.evtx` files](hunt.md#time-windows-on-evtx-files).
 
 sigma2sql is MIT licensed. The source is at
 [github.com/brkozer/sigma2sql](https://github.com/brkozer/sigma2sql).

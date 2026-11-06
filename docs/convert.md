@@ -170,7 +170,7 @@ detection:
     ```console
     $ sigma2sql convert tools.yml --json-column data
     -- Tool checks
-    SELECT * FROM "events" WHERE (cidr_match(json_extract("data", '$."SourceIp"'), '10.0.0.0/8') AND json_extract("data", '$."Image"') REGEXP '\\temp\\[a-z]+\.exe$' AND CASE WHEN CAST(json_extract("data", '$."DestinationPort"') AS TEXT) GLOB '*[0-9]*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '*[^0-9.eE+-]*' THEN CAST(json_extract("data", '$."DestinationPort"') AS REAL) END < 1024);
+    SELECT * FROM "events" WHERE (cidr_match(json_extract("data", '$."SourceIp"'), '10.0.0.0/8') AND json_extract("data", '$."Image"') REGEXP '\\temp\\[a-z]+\.exe$' AND CASE WHEN CAST(json_extract("data", '$."DestinationPort"') AS TEXT) GLOB '*[0-9]*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '*[^0-9.eE+-]*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '*.*.*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '*[eE]*[eE.]*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '*[0-9.][+-]*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '*[+-][+eE-]*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '[eE]*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '.[eE]*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '[+-].[eE]*' AND CAST(json_extract("data", '$."DestinationPort"') AS TEXT) NOT GLOB '*[eE+-]' THEN CAST(json_extract("data", '$."DestinationPort"') AS REAL) END < 1024);
     ```
 
 === "PostgreSQL"
@@ -186,7 +186,7 @@ detection:
     ```console
     $ sigma2sql convert tools.yml --json-column data -d duckdb
     -- Tool checks
-    SELECT * FROM "events" WHERE (cidr_match("data"->>'$."SourceIp"', '10.0.0.0/8') AND regexp_matches("data"->>'$."Image"', '\\temp\\[a-z]+\.exe$') AND TRY_CAST("data"->>'$."DestinationPort"' AS DOUBLE) < 1024);
+    SELECT * FROM "events" WHERE (cidr_match(("data"->>'$."SourceIp"'), '10.0.0.0/8') AND regexp_matches(("data"->>'$."Image"'), '\\temp\\[a-z]+\.exe$') AND TRY_CAST(("data"->>'$."DestinationPort"') AS DOUBLE) < 1024);
     ```
 
 === "ClickHouse"
@@ -194,7 +194,7 @@ detection:
     ```console
     $ sigma2sql convert tools.yml --json-column data -d clickhouse
     -- Tool checks
-    SELECT * FROM "events" WHERE (((isIPv4String(toString(JSONExtract("data", 'SourceIp', 'Nullable(String)'))) OR isIPv6String(toString(JSONExtract("data", 'SourceIp', 'Nullable(String)')))) AND isIPAddressInRange(toString(JSONExtract("data", 'SourceIp', 'Nullable(String)')), '10.0.0.0/8')) AND match(JSONExtract("data", 'Image', 'Nullable(String)'), '(?-s)\\\\temp\\\\[a-z]+\\.exe$') AND toFloat64OrNull(JSONExtract("data", 'DestinationPort', 'Nullable(String)')) < 1024);
+    SELECT * FROM "events" WHERE (((isIPv4String(toString(JSONExtract("data", 'SourceIp', 'Nullable(String)'))) OR isIPv6String(toString(JSONExtract("data", 'SourceIp', 'Nullable(String)')))) AND isIPAddressInRange(toString(JSONExtract("data", 'SourceIp', 'Nullable(String)')), '10.0.0.0/8')) AND match(JSONExtract("data", 'Image', 'Nullable(String)'), '(?-s)\\\\temp\\\\[a-z]+\\.exe$') AND if(match(JSONExtract("data", 'DestinationPort', 'Nullable(String)'), '^[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?$'), toFloat64OrNull(JSONExtract("data", 'DestinationPort', 'Nullable(String)')), NULL) < 1024);
     ```
 
 How each test is written:
@@ -206,7 +206,7 @@ How each test is written:
 | wildcard, `cased` | `GLOB` | `LIKE` | `LIKE` | `LIKE` |
 | `re` | `REGEXP` | `~` | `regexp_matches()` | `match()` |
 | `cidr` | `cidr_match()` | `<<=` on `inet` | `cidr_match()` | `isIPAddressInRange()` |
-| `lt`, `lte`, `gt`, `gte` in JSON | `CASE` with `GLOB` | `pg_input_is_valid` | `TRY_CAST` | `toFloat64OrNull` |
+| `lt`, `lte`, `gt`, `gte` in JSON | `CASE` with `GLOB` | `pg_input_is_valid` | `TRY_CAST` | `match()` and `toFloat64OrNull` |
 | JSON key | `json_extract` | `->>`, `#>>` | `->>` | `JSONExtract` |
 
 Things to know before you run the SQL:
@@ -235,8 +235,8 @@ The full table of features per database is on [supported features](features.md).
 ## Directories
 
 A directory is searched recursively for files ending in `.yml` or `.yaml`, in sorted order. The
-suffix check is case-sensitive, so `RULE.YML` is not picked up. A file you name directly is
-read whatever it is called.
+suffix can be in upper or lower case, so `RULE.YML` is picked up too. A file you name directly
+is read whatever it is called.
 
 Each path can hold many rules, and a file can hold several YAML documents. SQL goes to stdout
 and everything else goes to stderr, so a redirect gives a clean file:

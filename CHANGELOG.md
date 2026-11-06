@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.1 (2026-11-07)
+
+- Documentation site: <https://brkozer.github.io/sigma2sql/>.
+- Fix: with the `evtx` and `ecs-winlogbeat` profiles, correlations with a `timespan` found
+  nothing and gave no error, because `default_field` also moved the time field. This covers
+  `hunt` on `.evtx` files. The time is now read from the path the profile gives, then from
+  `default_field`. Tests had a flat time field, which is why this went unnoticed; they now run
+  these profiles on all four databases.
+- Fix: `--timestamp-field` was ignored when `hunt` chose the `evtx` profile by itself.
+- Fix: `hunt` read a time with no zone in the machine's time zone. It is UTC now, as in `test`.
+- Fix: on DuckDB before 2.0, rules with `and` on JSON fields were skipped, although
+  `duckdb>=1.3` is what we ask for. CI now also runs the oldest supported version.
+- Fix: SQLite read text such as `10.0.0.1` or `1-2` as a number, and ClickHouse `e5` or `1e+`.
+- Fix: non-ASCII keywords did not match on `.evtx` files or in `test` and `check`.
+- `check` now loads every rule, also those without test files, and fails on what cannot load
+  or convert. An invalid regex is a failure even if no event reaches it. This can turn a
+  passing run red.
+- `hunt`, `check` and `test` exit 2 on a rule path that does not exist or holds no rule files,
+  and `hunt` when no rule could run, so a mistyped path no longer passes in CI.
+- A rule file that is not UTF-8 is skipped with a message, and an unwritable `--sarif` file
+  exits 2, both without a traceback. `.YML` files count as rule files. `-e` refuses negative
+  numbers.
+- `hunt` only stops on damaged logs if no event at all could be read, over all `--logs` values.
+  One failing `--examples` query no longer ends the hunt, and mixing `.evtx` with other logs
+  without a `--profile` gives a warning.
+- `check` keeps the other failures of a rule when a test file is broken, and JSON errors name
+  the real line.
+- The GitHub Action accepts paths on several lines.
+- README: the regression samples run on SQLite, DuckDB, ClickHouse and from `.evtx` files, not
+  on PostgreSQL as it said, and the library example needed a `Path`.
+
 ## 0.3.0 (2026-11-06)
 
 - ClickHouse dialect, tested on a real server: all SigmaHQ rules run, and the regression

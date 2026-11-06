@@ -113,7 +113,7 @@ to change a copy.
 | `mapping` | `{}` | Sigma field to column or key, or a tuple of candidates of which the first present wins |
 | `json_column` | `None` | every event is one JSON object in this column |
 | `keyword_column` | `None` | column searched by keyword rules |
-| `timestamp` | `"timestamp"` | event time field |
+| `timestamp` | `"timestamp"` | column or path of the event time; with `json_column`, `default_field` is tried after it, and a `mapping` entry for it wins over both |
 | `timestamp_format` | `"iso"` | `"iso"`, `"epoch_s"` or `"epoch_ms"` |
 | `nested` | `False` | dotted names are paths into nested JSON |
 | `default_field` | `None` | template or templates for unmapped fields, with `{field}` or `{field_words}` |
@@ -176,7 +176,7 @@ print(correlation_query(corr, col.resolve(corr), target))
 
 ```text
 WITH base AS (
-  SELECT 'failed_logon' AS sigma_rule, epoch(TRY_CAST("data"->>'$."UtcTime"' AS TIMESTAMPTZ)) AS sigma_ts, "data"->>'$."TargetUserName"' AS "g0" FROM "events" WHERE "data"->>'$."EventID"' = '4625'
+  SELECT 'failed_logon' AS sigma_rule, epoch(TRY_CAST(("data"->>'$."UtcTime"') AS TIMESTAMPTZ)) AS sigma_ts, ("data"->>'$."TargetUserName"') AS "g0" FROM "events" WHERE ("data"->>'$."EventID"') = '4625'
 ),
 windows AS (SELECT DISTINCT "g0", sigma_ts FROM base WHERE sigma_ts IS NOT NULL)
 SELECT w."g0" AS "TargetUserName", make_timestamp(CAST((MIN(b.sigma_ts)) * 1000000 AS BIGINT)) AS window_start, make_timestamp(CAST((w.sigma_ts) * 1000000 AS BIGINT)) AS window_end, COUNT(*) AS value
@@ -289,7 +289,7 @@ print(target.mapping)
 
 | Name | Meaning |
 | --- | --- |
-| `read_jsonl(text)` | parse JSON Lines into a list of dicts; `ValueError` for bad JSON or a line that is not an object |
+| `read_jsonl(text)` | parse JSON Lines into a list of dicts; `ValueError` for bad JSON, JSON nested too deeply or a line that is not an object |
 | `matching_events(rule, events, base=None)` | indexes of the events a detection rule matches, from 0 |
 | `rows(query, events)` | run a query over the events and return named rows |
 | `target(base=None)` | `base` pointed at the runner's table |
@@ -415,8 +415,8 @@ print(conn.execute(to_query(rule, Target("sqlite", "logs.logons"))).fetchall())
 ```
 
 On DuckDB, `sigma2sql.hunt.connect()` does the same for `cidr_match`, the only helper that
-dialect needs, and creates an `events` table with a JSON column `data`.
-`sigma2sql.hunt.load_logs` fills it:
+dialect needs, sets the time zone to UTC and creates an `events` table with a JSON column
+`data`. `sigma2sql.hunt.load_logs` fills it:
 
 ```python
 from sigma2sql.hunt import connect, load_logs
@@ -439,8 +439,7 @@ for mapping and timestamp settings. It returns a `Report`.
 
 Unlike the command, it does not pick the `evtx` profile for `.evtx` files. Without that profile
 rules do not find their fields there, so pass `apply_profile(Target(), load_profile("evtx"))`
-as `base`. Correlations then need the mapping described under [Event
-time](profiles.md#event-time).
+as `base`.
 
 | `Report` field | Meaning |
 | --- | --- |
@@ -449,7 +448,7 @@ time](profiles.md#event-time).
 | `ran` | rules and correlations that ran |
 | `skipped` | `(rule, reason)` for each one that could not run |
 | `other_logs` | rules left out because they are for another product |
-| `warnings` | logs that could only be read in part |
+| `warnings` | logs that could only be read in part, and rules whose examples could not be fetched |
 
 A `Hit` has `rule`, `count`, `examples` (JSON strings) and `rank`, the position of its level in
 `sigma2sql.hunt.LEVELS`, or the length of that tuple for no level or any other level.
