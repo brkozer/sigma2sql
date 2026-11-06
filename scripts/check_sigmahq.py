@@ -1,15 +1,18 @@
-"""Convert every rule in a SigmaHQ checkout and execute the SQL on SQLite, DuckDB and PostgreSQL.
+"""Convert every rule in a SigmaHQ checkout and execute the SQL on each database.
 
-    uv run python scripts/check_sigmahq.py path/to/sigma/rules [--dsn DSN] [--profile NAME]
+    uv run python scripts/check_sigmahq.py path/to/sigma/rules [--dsn DSN]
+        [--clickhouse URL] [--profile NAME] [--placeholders FILE]
 
 Prints how many rules convert per dialect and fails if any generated query is rejected
-by the database. Without a DSN PostgreSQL is skipped.
+by the database. PostgreSQL and ClickHouse are skipped unless their address is given.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -17,12 +20,35 @@ from typing import Any
 
 from sigma2sql import RuleError, Target, UnsupportedRule, load_rule_file, to_query
 from sigma2sql.hunt import connect as duckdb_connect
-from sigma2sql.profile import apply_profile, load_profile
+from sigma2sql.profile import apply_profile, load_placeholders, load_profile
 from sigma2sql.runner import connect as sqlite_connect
 
 
-def main(rules_dir: str, dsn: str | None, profile: str | None) -> int:
+def clickhouse_runner(url: str) -> Callable[[str], Any]:
+    def run(query: str) -> bytes:
+        # The largest SigmaHQ rule, a list of driver hashes, exceeds the 256 KiB default.
+        request = urllib.request.Request(f"{url}?max_query_size=4194304", data=query.encode())
+        try:
+            with urllib.request.urlopen(request) as response:
+                return bytes(response.read())
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(exc.read().decode()) from exc
+
+    run("DROP TABLE IF EXISTS events")
+    run("CREATE TABLE events (data String) ENGINE = Memory")
+    return run
+
+
+def main(
+    rules_dir: str,
+    dsn: str | None,
+    clickhouse: str | None,
+    profile: str | None,
+    placeholders: str | None,
+) -> int:
     base = Target(json_column="data")
+    if placeholders:
+        base = replace(base, placeholders=load_placeholders(Path(placeholders)))
     if profile:
         base = apply_profile(base, load_profile(profile))
         base = replace(base, routes=tuple(replace(r, table=None) for r in base.routes))
@@ -40,6 +66,8 @@ def main(rules_dir: str, dsn: str | None, profile: str | None) -> int:
         pg = psycopg.connect(dsn, autocommit=True)
         pg.execute("CREATE TEMP TABLE events (data jsonb)")
         engines["postgres"] = lambda q: pg.execute(q.replace("%", "%%"))
+    if clickhouse:
+        engines["clickhouse"] = clickhouse_runner(clickhouse)
 
     converted = dict.fromkeys(engines, 0)
     failures: list[str] = []
@@ -71,6 +99,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("rules")
     parser.add_argument("--dsn", help="PostgreSQL connection string")
+    parser.add_argument("--clickhouse", help="ClickHouse HTTP URL")
     parser.add_argument("--profile", help="built-in profile name or YAML file")
+    parser.add_argument("--placeholders", help="YAML map of placeholder values")
     args = parser.parse_args()
-    sys.exit(main(args.rules, args.dsn, args.profile))
+    sys.exit(main(args.rules, args.dsn, args.clickhouse, args.profile, args.placeholders))

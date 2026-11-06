@@ -1,4 +1,4 @@
-"""Render Expr trees as SQL for SQLite, PostgreSQL and DuckDB."""
+"""Render Expr trees as SQL for SQLite, PostgreSQL, DuckDB and ClickHouse."""
 
 from __future__ import annotations
 
@@ -28,21 +28,34 @@ from sigma2sql.expr import (
 )
 from sigma2sql.rule import Rule
 
-Dialect = Literal["sqlite", "postgres", "duckdb"]
+Dialect = Literal["sqlite", "postgres", "duckdb", "clickhouse"]
 TimestampFormat = Literal["iso", "epoch_s", "epoch_ms"]
-DIALECTS: tuple[Dialect, ...] = ("sqlite", "postgres", "duckdb")
+DIALECTS: tuple[Dialect, ...] = ("sqlite", "postgres", "duckdb", "clickhouse")
 
 # SQLite parses `a OR b OR ...` into a tree as deep as the list and stops at depth 1000,
 # which rules with long hash lists exceed. Grouping keeps the depth logarithmic.
 GROUP = 50
 # Largest {m,n} repetition count each engine accepts (SQLite uses Python's re: no limit).
-MAX_REPEAT: dict[Dialect, int | None] = {"sqlite": None, "postgres": 255, "duckdb": 1000}
+MAX_REPEAT: dict[Dialect, int | None] = {
+    "sqlite": None,
+    "postgres": 255,
+    "duckdb": 1000,
+    "clickhouse": 1000,
+}
 REPEAT = re.compile(r"\{(\d+)(?:,(\d*))?\}")
-# RE2 (DuckDB) has no lookaround or backreferences.
+# RE2 (DuckDB, ClickHouse) has no lookaround or backreferences.
 # Word boundaries inside CamelCase names: NewValue -> New Value.
 CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 RE2_UNSUPPORTED = re.compile(r"\(\?<?[=!]|\\[1-9]")
 STRFTIME = {"minute": "%M", "hour": "%H", "day": "%d", "month": "%m", "year": "%Y"}
+CLICKHOUSE_PARTS = {
+    "minute": "toMinute",
+    "hour": "toHour",
+    "day": "toDayOfMonth",
+    "week": "toISOWeek",
+    "month": "toMonth",
+    "year": "toYear",
+}
 
 
 @dataclass(frozen=True)
@@ -135,6 +148,10 @@ class Renderer:
         self.d = target.dialect
         self.json = target.json_column is not None
 
+    def lit(self, value: str) -> str:
+        """A string literal; ClickHouse treats backslashes in literals as escapes."""
+        return literal(value.replace("\\", "\\\\") if self.d == "clickhouse" else value)
+
     def render(self, expr: Expr) -> str:
         match expr:
             case And(items):
@@ -154,7 +171,7 @@ class Renderer:
                     return f"{col} = {value}"
                 # JSON may hold 4688 or "4688"; compare the text form so both match.
                 text = f"CAST({col} AS TEXT)" if self.d == "sqlite" else col
-                return f"{text} = {literal(str(value))}"
+                return f"{text} = {self.lit(str(value))}"
             case NullMatch(f):
                 return f"{self.column(f)} IS NULL"
             case Exists(f, exists):
@@ -165,8 +182,13 @@ class Renderer:
             case Cidr(f, network):
                 col = self.column(f)
                 if self.d == "postgres":
-                    return f"({col})::inet <<= {literal(network)}::inet"
-                return f"cidr_match({col}, {literal(network)})"
+                    return f"({col})::inet <<= {self.lit(network)}::inet"
+                if self.d == "clickhouse":
+                    # isIPAddressInRange raises on text that is not an address.
+                    text = f"toString({col})"
+                    valid = f"(isIPv4String({text}) OR isIPv6String({text}))"
+                    return f"({valid} AND isIPAddressInRange({text}, {self.lit(network)}))"
+                return f"cidr_match({col}, {self.lit(network)})"
             case Compare(f, op, value):
                 return f"{self.number(self.column(f))} {op} {value}"
             case TimePart(f, part, value):
@@ -193,12 +215,17 @@ class Renderer:
         if self.t.json_column is None:
             return quote_ident(name)
         col = quote_ident(self.t.json_column)
-        parts = [_dq(p) for p in (name.split(".") if self.t.nested else [name])]
+        keys = name.split(".") if self.t.nested else [name]
+        if self.d == "clickhouse":
+            # Nullable(String): numbers come back as text and a missing key as NULL.
+            args = ", ".join(self.lit(k) for k in keys)
+            return f"JSONExtract({col}, {args}, 'Nullable(String)')"
+        parts = [_dq(p) for p in keys]
         if self.d == "postgres":
             if len(parts) == 1:
-                return f"{col}->>{literal(name)}"
-            return f"{col}#>>{literal('{' + ','.join(parts) + '}')}"
-        path = literal("$" + "".join("." + p for p in parts))
+                return f"{col}->>{self.lit(name)}"
+            return f"{col}#>>{self.lit('{' + ','.join(parts) + '}')}"
+        path = self.lit("$" + "".join("." + p for p in parts))
         if self.d == "duckdb":
             return f"{col}->>{path}"
         return f"json_extract({col}, {path})"
@@ -211,6 +238,8 @@ class Renderer:
             return f"({col})::numeric"
         if self.d == "duckdb":
             return f"TRY_CAST({col} AS DOUBLE)"
+        if self.d == "clickhouse":
+            return f"toFloat64OrNull({col})"
         return f"CAST({col} AS REAL)"
 
     def cast_number(self, expr: str) -> str:
@@ -218,6 +247,8 @@ class Renderer:
             return f"CAST({expr} AS double precision)"
         if self.d == "duckdb":
             return f"TRY_CAST({expr} AS DOUBLE)"
+        if self.d == "clickhouse":
+            return f"toFloat64OrNull(toString({expr}))"
         return f"CAST({expr} AS REAL)"
 
     def epoch(self, col: str | None = None) -> str:
@@ -231,6 +262,9 @@ class Renderer:
             return f"EXTRACT(EPOCH FROM CAST({col} AS timestamptz))"
         if self.d == "duckdb":
             return f"epoch(TRY_CAST({col} AS TIMESTAMPTZ))"
+        if self.d == "clickhouse":
+            parsed = f"parseDateTime64BestEffortOrNull(toString({col}), 3, 'UTC')"
+            return f"(toUnixTimestamp64Milli({parsed}) / 1000.0)"
         return f"unixepoch({col}, 'subsec')"
 
     def from_epoch(self, expr: str) -> str:
@@ -238,6 +272,8 @@ class Renderer:
             return f"datetime({expr}, 'unixepoch', 'subsec')"
         if self.d == "postgres":
             return f"to_timestamp({expr})"
+        if self.d == "clickhouse":
+            return f"fromUnixTimestamp64Milli(toInt64(({expr}) * 1000), 'UTC')"
         # A plain (UTC) TIMESTAMP: TIMESTAMPTZ values need pytz on the Python side.
         return f"make_timestamp(CAST(({expr}) * 1000000 AS BIGINT))"
 
@@ -247,12 +283,14 @@ class Renderer:
         if self.d == "postgres":
             return f"EXTRACT({part.upper()} FROM to_timestamp({seconds}) AT TIME ZONE 'UTC')"
         if self.d == "duckdb":
-            return f"date_part({literal(part)}, {self.from_epoch(seconds)})"
+            return f"date_part({self.lit(part)}, {self.from_epoch(seconds)})"
+        if self.d == "clickhouse":
+            return f"{CLICKHOUSE_PARTS[part]}({self.from_epoch(seconds)})"
         if part == "week":
             # The week of the year's Thursdays, which is how ISO 8601 numbers weeks.
             thursday = f"date({seconds}, 'unixepoch', '-3 days', 'weekday 4')"
             return f"((CAST(strftime('%j', {thursday}) AS INTEGER) - 1) / 7 + 1)"
-        return f"CAST(strftime({literal(STRFTIME[part])}, {seconds}, 'unixepoch') AS INTEGER)"
+        return f"CAST(strftime({self.lit(STRFTIME[part])}, {seconds}, 'unixepoch') AS INTEGER)"
 
     def percentile(self, expr: str, fraction: float) -> str:
         """Aggregate: the value at `fraction` of the sorted values, interpolated."""
@@ -260,6 +298,8 @@ class Renderer:
             return f"percentile_cont({fraction}) WITHIN GROUP (ORDER BY {expr})"
         if self.d == "duckdb":
             return f"quantile_cont({expr}, {fraction})"
+        if self.d == "clickhouse":
+            return f"quantileExactInclusive({fraction})({expr})"
         return f"sigma_percentile({expr}, {fraction})"
 
     def keyword(self) -> str:
@@ -274,16 +314,20 @@ class Renderer:
         if not value.has_wildcards:
             text = value.text
             if cased:
-                return f"{col} = {literal(text)}"
+                return f"{col} = {self.lit(text)}"
             if self.d == "sqlite":
-                return f"{col} = {literal(text)} COLLATE NOCASE"
-            return f"LOWER({col}) = {literal(text.lower())}"
+                return f"{col} = {self.lit(text)} COLLATE NOCASE"
+            if self.d == "clickhouse":  # lower() only folds ASCII there
+                return f"lowerUTF8({col}) = {self.lit(text.lower())}"
+            return f"LOWER({col}) = {self.lit(text.lower())}"
         if self.d == "sqlite":
             if cased:
-                return f"{col} GLOB {literal(_glob(value))}"
-            return f"{col} LIKE {literal(_like(value))} ESCAPE '\\'"
+                return f"{col} GLOB {self.lit(_glob(value))}"
+            return f"{col} LIKE {self.lit(_like(value))} ESCAPE '\\'"
         op = "LIKE" if cased else "ILIKE"
-        return f"{col} {op} {literal(_like(value))} ESCAPE '\\'"
+        if self.d == "clickhouse":  # no ESCAPE clause; the backslash always escapes
+            return f"{col} {op} {self.lit(_like(value))}"
+        return f"{col} {op} {self.lit(_like(value))} ESCAPE '\\'"
 
     def regex(self, col: str, pattern: str, flags: str = "") -> str:
         limit = MAX_REPEAT[self.d]
@@ -291,16 +335,18 @@ class Renderer:
         if limit is not None and any(n > limit for n in bounds):
             raise UnsupportedRule(f"{self.d} regexes allow at most {limit} repetitions: {pattern}")
         if self.d == "postgres":
-            return f"{col} ~ {literal(_postgres_flags(flags) + pattern)}"
+            return f"{col} ~ {self.lit(_postgres_flags(flags) + pattern)}"
+        if self.d in ("duckdb", "clickhouse") and RE2_UNSUPPORTED.search(pattern):
+            raise UnsupportedRule(f"{self.d} (RE2) has no lookaround or backreferences: {pattern}")
+        if self.d == "clickhouse":
+            # match() lets `.` reach newlines by default; Sigma regexes do not.
+            prefix = f"(?{flags})" if "s" in flags else f"(?{flags}-s)"
+            return f"match({col}, {self.lit(prefix + pattern)})"
         if flags:
             pattern = f"(?{flags}){pattern}"
         if self.d == "duckdb":
-            if RE2_UNSUPPORTED.search(pattern):
-                raise UnsupportedRule(
-                    f"duckdb (RE2) has no lookaround or backreferences: {pattern}"
-                )
-            return f"regexp_matches({col}, {literal(pattern)})"
-        return f"{col} REGEXP {literal(pattern)}"
+            return f"regexp_matches({col}, {self.lit(pattern)})"
+        return f"{col} REGEXP {self.lit(pattern)}"
 
     def same(self, a: str, b: str) -> str:
         """Null-safe equality."""

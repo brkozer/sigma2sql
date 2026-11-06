@@ -1,4 +1,4 @@
-"""Correlations and legacy aggregations, run on SQLite, DuckDB and (with a DSN) PostgreSQL."""
+"""Correlations and legacy aggregations, run on every database that is available."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from clickhouse import clickhouse_rows
 from sigma2sql import Collection, Correlation, RuleError, Target, correlation_query, load_documents
 from sigma2sql.rule import Rule
 from sigma2sql.runner import rows, target
@@ -270,7 +271,14 @@ def run_postgres(text: str, events: list[dict[str, Any]]) -> list[tuple[Any, ...
         return _normalise([dict(zip(names, r, strict=True)) for r in cur.fetchall()], groups)
 
 
-@pytest.mark.parametrize("engine", [run_sqlite, run_duckdb, run_postgres], ids=lambda f: f.__name__)
+def run_clickhouse(text: str, events: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+    sql, groups = _sql(text, Target("clickhouse", json_column="data"))
+    return _normalise(clickhouse_rows(sql, events), groups)
+
+
+@pytest.mark.parametrize(
+    "engine", [run_sqlite, run_duckdb, run_postgres, run_clickhouse], ids=lambda f: f.__name__
+)
 @pytest.mark.parametrize(("name", "text", "events", "expected"), CASES, ids=[c[0] for c in CASES])
 def test_case(
     engine: Callable[..., list[tuple[Any, ...]]],

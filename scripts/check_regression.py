@@ -1,11 +1,12 @@
 """Run SigmaHQ's regression samples through sigma2sql.
 
-    uv run python scripts/check_regression.py path/to/sigma [--verbose]
+    uv run python scripts/check_regression.py path/to/sigma [--clickhouse URL] [--verbose]
 
 SigmaHQ keeps real event samples for many rules under `regression_data/` (EVTX files with a
 JSON export next to them) and the number of matches each rule must produce. This loads the
-JSON samples with the built-in `evtx` profile, runs each rule on SQLite and DuckDB and checks
-the match count. Exits 1 if any rule finds fewer matches than SigmaHQ expects.
+JSON samples with the built-in `evtx` profile, runs each rule on SQLite and DuckDB (and
+ClickHouse, given its address) and checks the match count. Exits 1 if any rule finds fewer
+matches than SigmaHQ expects or the databases disagree.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -51,7 +54,25 @@ def duckdb_matches(rule: Rule, events: list[dict[str, Any]], target: Target) -> 
     return count
 
 
-def main(root: Path, verbose: bool) -> int:
+def clickhouse_matches(url: str, rule: Rule, events: list[dict[str, Any]], target: Target) -> int:
+    def run(query: str) -> str:
+        request = urllib.request.Request(f"{url}?max_query_size=4194304", data=query.encode())
+        try:
+            with urllib.request.urlopen(request) as response:
+                return str(response.read().decode())
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(exc.read().decode()) from exc
+
+    run("DROP TABLE IF EXISTS events")
+    run("CREATE TABLE events (data String) ENGINE = Memory")
+    rows = "\n".join(json.dumps({"data": json.dumps(e)}) for e in events)
+    run(f"INSERT INTO events FORMAT JSONEachRow\n{rows}")
+    tgt = replace(target, dialect="clickhouse", table="events", json_column="data")
+    tgt = replace(tgt, routes=tuple(replace(r, table=None) for r in tgt.routes))
+    return int(run(f"SELECT COUNT(*) FROM ({to_query(rule, tgt)}) q"))
+
+
+def main(root: Path, verbose: bool, clickhouse: str | None = None) -> int:
     rules: dict[str, Rule] = {}
     for name in RULE_DIRS:
         for path in sorted((root / name).rglob("*.yml")):
@@ -66,6 +87,8 @@ def main(root: Path, verbose: bool) -> int:
     target = apply_profile(Target(), load_profile("evtx"))
     tested = 0
     passed = {"sqlite": 0, "duckdb": 0}
+    if clickhouse:
+        passed["clickhouse"] = 0
     failures: list[str] = []
     for info_path in sorted((root / "regression_data").rglob("info.yml")):
         info = yaml.safe_load(info_path.read_text(encoding="utf-8")) or {}
@@ -82,6 +105,10 @@ def main(root: Path, verbose: bool) -> int:
                 "sqlite": len(matching_events(rule, events, target)),
                 "duckdb": duckdb_matches(rule, events, target),
             }
+            if clickhouse:
+                results["clickhouse"] = clickhouse_matches(clickhouse, rule, events, target)
+            if len(set(results.values())) > 1:
+                failures.append(f"databases disagree on {rule.title}: {results}")
             for engine, found in results.items():
                 if found >= expected:
                     passed[engine] += 1
@@ -102,6 +129,7 @@ def main(root: Path, verbose: bool) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sigma", type=Path, help="SigmaHQ repository checkout")
+    parser.add_argument("--clickhouse", help="ClickHouse HTTP URL")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
-    sys.exit(main(args.sigma, args.verbose))
+    sys.exit(main(args.sigma, args.verbose, args.clickhouse))

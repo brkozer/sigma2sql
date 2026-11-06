@@ -3,14 +3,14 @@
 Every referenced rule contributes rows to a `base` CTE (rule name, event time, group-by
 values, the counted field). Without a timespan the result is a plain GROUP BY. With one,
 each event closes a window `[t - timespan, t]` of its group; the window's events are found
-with a self-join, which works the same on SQLite, PostgreSQL and DuckDB and allows
+with a self-join, which works the same on every database and allows
 COUNT(DISTINCT ...), which window functions do not.
 """
 
 from __future__ import annotations
 
 from sigma2sql.rule import OPS, Correlation, Rule
-from sigma2sql.sql import Renderer, Target, literal, quote_ident, source
+from sigma2sql.sql import Renderer, Target, quote_ident, source
 
 
 def correlation_query(corr: Correlation, rules: list[Rule], target: Target) -> str:
@@ -19,7 +19,7 @@ def correlation_query(corr: Correlation, rules: list[Rule], target: Target) -> s
 
     branches: list[str] = []
     for rule in rules:
-        cols = [f"{literal(rule.ref)} AS sigma_rule", f"{r.epoch()} AS sigma_ts"]
+        cols = [f"{r.lit(rule.ref)} AS sigma_rule", f"{r.epoch()} AS sigma_ts"]
         for name, alias in zip(corr.group_by, groups, strict=True):
             sigma_field = corr.aliases.get(name, {}).get(rule.ref, name)
             cols.append(f"{r.column(sigma_field)} AS {alias}")
