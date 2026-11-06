@@ -133,6 +133,8 @@ def _target(args: argparse.Namespace) -> Target:
 def _report_errors(col: Collection) -> None:
     for path, reason in col.errors:
         print(f"skip {path}: {reason}", file=sys.stderr)
+    for unused in col.unused_filters():
+        print(f"warning: filter {unused.path or unused.title} applies to no rule", file=sys.stderr)
 
 
 def _sql(item: Document, col: Collection, target: Target) -> str:

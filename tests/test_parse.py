@@ -72,7 +72,7 @@ def test_rule_metadata_and_multiple_conditions() -> None:
     ("text", "error"),
     [
         ("action: global\ntitle: x\n", UnsupportedRule),
-        ("filter:\n  rules: [a]\n", UnsupportedRule),
+        ("filter:\n  rules: [a]\n", RuleError),
         ("- a\n- b\n", RuleError),
         ("title: x\n", RuleError),
         ("detection:\n  sel: {A: 1}\n", RuleError),

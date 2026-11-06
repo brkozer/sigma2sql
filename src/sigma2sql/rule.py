@@ -12,7 +12,7 @@ import yaml
 from sigma2sql.condition import compile_condition
 from sigma2sql.detection import Placeholders, compile_search
 from sigma2sql.errors import RuleError, UnsupportedRule
-from sigma2sql.expr import Expr, any_of
+from sigma2sql.expr import Expr, all_of, any_of
 
 CorrelationType = Literal["event_count", "value_count", "value_sum", "value_avg", "temporal"]
 CORRELATION_TYPES: tuple[CorrelationType, ...] = (
@@ -37,6 +37,28 @@ Condition = tuple[tuple[str, float], ...]
 
 
 @dataclass(frozen=True)
+class Filter:
+    """A Sigma filter: an extra condition for existing rules, kept in a file of its own."""
+
+    title: str
+    id: str | None
+    name: str | None
+    logsource: Mapping[str, str]
+    rules: tuple[str, ...] | None  # ids or names; None means every rule of the logsource
+    searches: dict[str, Any]
+    condition: str
+    path: Path | None = dataclasses.field(default=None, compare=False)
+
+    def applies(self, rule: Rule) -> bool:
+        if any(rule.logsource.get(k) != v for k, v in self.logsource.items()):
+            return False
+        return self.rules is None or bool({rule.id, rule.name} & set(self.rules))
+
+    def compile(self, placeholders: Placeholders | None = None) -> Expr:
+        return _compile(self.searches, (self.condition,), placeholders)
+
+
+@dataclass(frozen=True)
 class Rule:
     title: str
     id: str | None
@@ -48,18 +70,12 @@ class Rule:
     # Set for rules written with the legacy `| count() ...` condition syntax.
     aggregation: Correlation | None = None
     path: Path | None = dataclasses.field(default=None, compare=False)
+    # Filters that apply to this rule; an event must pass all of them.
+    filters: tuple[Filter, ...] = ()
 
     def compile(self, placeholders: Placeholders | None = None) -> Expr:
-        """Build the match tree. Searches the condition never uses are not compiled."""
-        cache: dict[str, Expr] = {}
-
-        def resolve(name: str) -> Expr:
-            if name not in cache:
-                cache[name] = compile_search(name, self.searches[name], placeholders)
-            return cache[name]
-
-        names = list(self.searches)
-        return any_of([compile_condition(c, names, resolve) for c in self.conditions])
+        base = _compile(self.searches, self.conditions, placeholders)
+        return all_of([base, *(f.compile(placeholders) for f in self.filters)])
 
     @property
     def ref(self) -> str:
@@ -89,14 +105,29 @@ class Correlation:
 Document = Rule | Correlation
 
 
-def load_documents(text: str, path: Path | None = None) -> list[Document]:
+def _compile(
+    searches: dict[str, Any], conditions: tuple[str, ...], placeholders: Placeholders | None
+) -> Expr:
+    """Build the match tree. Searches the condition never uses are not compiled."""
+    cache: dict[str, Expr] = {}
+
+    def resolve(name: str) -> Expr:
+        if name not in cache:
+            cache[name] = compile_search(name, searches[name], placeholders)
+        return cache[name]
+
+    names = list(searches)
+    return any_of([compile_condition(c, names, resolve) for c in conditions])
+
+
+def load_documents(text: str, path: Path | None = None) -> list[Document | Filter]:
     try:
         docs = [d for d in yaml.safe_load_all(text) if d is not None]
     except yaml.YAMLError as exc:
         raise RuleError(f"invalid YAML: {exc}") from exc
     if not docs:
         raise RuleError("empty rule file")
-    out: list[Document] = []
+    out: list[Document | Filter] = []
     for doc in docs:
         if not isinstance(doc, dict):
             raise RuleError("a rule must be a YAML map")
@@ -105,13 +136,13 @@ def load_documents(text: str, path: Path | None = None) -> list[Document]:
         if "correlation" in doc:
             out.append(_correlation(doc, path))
         elif "filter" in doc:
-            raise UnsupportedRule("filter rules are not supported")
+            out.append(_filter(doc, path))
         else:
             out.append(_rule(doc, path))
     return out
 
 
-def load_file(path: Path) -> list[Document]:
+def load_file(path: Path) -> list[Document | Filter]:
     return load_documents(path.read_text(encoding="utf-8"), path)
 
 
@@ -139,6 +170,41 @@ def _meta(doc: dict[str, Any], path: Path | None) -> dict[str, Any]:
         "name": opt("name"),
         "path": path,
     }
+
+
+def _filter(doc: dict[str, Any], path: Path | None) -> Filter:
+    spec = doc["filter"]
+    if not isinstance(spec, dict):
+        raise RuleError("'filter' must be a map")
+    logsource = doc.get("logsource")
+    if not isinstance(logsource, dict) or not logsource:
+        raise RuleError("a filter needs a 'logsource'")
+    if "rules" not in spec:
+        raise RuleError("a filter needs 'rules': rule ids or names, or 'any'")
+    rules = spec["rules"]
+    if isinstance(rules, str):
+        rules = [] if rules.lower() == "any" else [rules]
+    if not isinstance(rules, list):
+        raise RuleError("filter 'rules' must be 'any', a rule id or name, or a list of them")
+    condition = spec.get("condition")
+    if not isinstance(condition, str):
+        raise RuleError("a filter needs exactly one 'condition' string")
+    if "|" in condition:
+        raise UnsupportedRule("aggregations are not supported in filters")
+    searches = {str(k): v for k, v in spec.items() if k not in ("rules", "condition")}
+    if not searches:
+        raise RuleError("filter has no searches")
+    meta = _meta(doc, path)
+    return Filter(
+        title=meta["title"],
+        id=meta["id"],
+        name=meta["name"],
+        logsource={str(k): str(v) for k, v in logsource.items() if v is not None},
+        rules=tuple(str(r) for r in rules) or None,  # an empty list means every rule
+        searches=searches,
+        condition=condition,
+        path=path,
+    )
 
 
 def _rule(doc: dict[str, Any], path: Path | None) -> Rule:
