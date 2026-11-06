@@ -23,6 +23,7 @@ from sigma2sql.expr import (
     Regex,
     SigmaString,
     StrMatch,
+    TimePart,
     Wildcard,
 )
 from sigma2sql.rule import Rule
@@ -41,6 +42,7 @@ REPEAT = re.compile(r"\{(\d+)(?:,(\d*))?\}")
 # Word boundaries inside CamelCase names: NewValue -> New Value.
 CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 RE2_UNSUPPORTED = re.compile(r"\(\?<?[=!]|\\[1-9]")
+STRFTIME = {"minute": "%M", "hour": "%H", "day": "%d", "month": "%m", "year": "%Y"}
 
 
 @dataclass(frozen=True)
@@ -157,9 +159,9 @@ class Renderer:
                 return f"{self.column(f)} IS NULL"
             case Exists(f, exists):
                 return f"{self.column(f)} IS {'NOT ' if exists else ''}NULL"
-            case Regex(f, pattern, ignore_case):
+            case Regex(f, pattern, flags):
                 col = self.keyword() if f is None else self.column(f)
-                return self.regex(col, ("(?i)" if ignore_case else "") + pattern)
+                return self.regex(col, pattern, flags)
             case Cidr(f, network):
                 col = self.column(f)
                 if self.d == "postgres":
@@ -167,6 +169,8 @@ class Renderer:
                 return f"cidr_match({col}, {literal(network)})"
             case Compare(f, op, value):
                 return f"{self.number(self.column(f))} {op} {value}"
+            case TimePart(f, part, value):
+                return f"{self.time_part(self.column(f), part)} = {value}"
             case FieldRef(f, other):
                 return f"{self.column(f)} = {self.column(other)}"
         raise AssertionError(f"unhandled expression {expr!r}")
@@ -216,9 +220,9 @@ class Renderer:
             return f"TRY_CAST({expr} AS DOUBLE)"
         return f"CAST({expr} AS REAL)"
 
-    def epoch(self) -> str:
-        """Event time in seconds since 1970, from the configured timestamp field."""
-        col = self.column(self.t.timestamp)
+    def epoch(self, col: str | None = None) -> str:
+        """Seconds since 1970 of a time column, by default the configured timestamp field."""
+        col = col or self.column(self.t.timestamp)
         fmt = self.t.timestamp_format
         if fmt != "iso":
             seconds = self.cast_number(col)
@@ -236,6 +240,27 @@ class Renderer:
             return f"to_timestamp({expr})"
         # A plain (UTC) TIMESTAMP: TIMESTAMPTZ values need pytz on the Python side.
         return f"make_timestamp(CAST(({expr}) * 1000000 AS BIGINT))"
+
+    def time_part(self, col: str, part: str) -> str:
+        """One part of a time column, in UTC; weeks are ISO 8601 weeks."""
+        seconds = self.epoch(col)
+        if self.d == "postgres":
+            return f"EXTRACT({part.upper()} FROM to_timestamp({seconds}) AT TIME ZONE 'UTC')"
+        if self.d == "duckdb":
+            return f"date_part({literal(part)}, {self.from_epoch(seconds)})"
+        if part == "week":
+            # The week of the year's Thursdays, which is how ISO 8601 numbers weeks.
+            thursday = f"date({seconds}, 'unixepoch', '-3 days', 'weekday 4')"
+            return f"((CAST(strftime('%j', {thursday}) AS INTEGER) - 1) / 7 + 1)"
+        return f"CAST(strftime({literal(STRFTIME[part])}, {seconds}, 'unixepoch') AS INTEGER)"
+
+    def percentile(self, expr: str, fraction: float) -> str:
+        """Aggregate: the value at `fraction` of the sorted values, interpolated."""
+        if self.d == "postgres":
+            return f"percentile_cont({fraction}) WITHIN GROUP (ORDER BY {expr})"
+        if self.d == "duckdb":
+            return f"quantile_cont({expr}, {fraction})"
+        return f"sigma_percentile({expr}, {fraction})"
 
     def keyword(self) -> str:
         if self.t.keyword_column:
@@ -260,13 +285,15 @@ class Renderer:
         op = "LIKE" if cased else "ILIKE"
         return f"{col} {op} {literal(_like(value))} ESCAPE '\\'"
 
-    def regex(self, col: str, pattern: str) -> str:
+    def regex(self, col: str, pattern: str, flags: str = "") -> str:
         limit = MAX_REPEAT[self.d]
         bounds = [int(n) for m in REPEAT.finditer(pattern) for n in m.groups() if n]
         if limit is not None and any(n > limit for n in bounds):
             raise UnsupportedRule(f"{self.d} regexes allow at most {limit} repetitions: {pattern}")
         if self.d == "postgres":
-            return f"{col} ~ {literal(pattern)}"
+            return f"{col} ~ {literal(_postgres_flags(flags) + pattern)}"
+        if flags:
+            pattern = f"(?{flags}){pattern}"
         if self.d == "duckdb":
             if RE2_UNSUPPORTED.search(pattern):
                 raise UnsupportedRule(
@@ -288,6 +315,13 @@ def _expand(templates: tuple[str, ...], sigma_field: str) -> tuple[str, ...]:
         if name not in names:
             names.append(name)
     return tuple(names)
+
+
+def _postgres_flags(flags: str) -> str:
+    """Embedded options: PostgreSQL's letters for `m` and `s` differ from Python's."""
+    newlines = {"ms": "w", "m": "n", "s": "s"}.get(flags.replace("i", ""), "")
+    letters = ("i" if "i" in flags else "") + newlines
+    return f"(?{letters})" if letters else ""
 
 
 def _dq(key: str) -> str:

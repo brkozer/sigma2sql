@@ -18,10 +18,11 @@ COLUMN = "data"
 
 
 def connect() -> sqlite3.Connection:
-    """SQLite connection with the REGEXP and cidr_match functions the sqlite dialect uses."""
+    """SQLite connection with the functions the sqlite dialect uses and SQLite lacks."""
     conn = sqlite3.connect(":memory:")
     conn.create_function("regexp", 2, _regexp, deterministic=True)
     conn.create_function("cidr_match", 2, _cidr_match, deterministic=True)
+    conn.create_aggregate("sigma_percentile", 2, _Percentile)  # type: ignore[arg-type]
     return conn
 
 
@@ -69,6 +70,28 @@ def read_jsonl(text: str) -> list[dict[str, Any]]:
             raise ValueError(f"line {n}: each event must be a JSON object")
         events.append(event)
     return events
+
+
+class _Percentile:
+    """Linear interpolation between the closest ranks, as PostgreSQL's percentile_cont."""
+
+    def __init__(self) -> None:
+        self.values: list[float] = []
+        self.fraction = 0.0
+
+    def step(self, value: float | None, fraction: float) -> None:
+        self.fraction = fraction
+        if value is not None:
+            self.values.append(value)
+
+    def finalize(self) -> float | None:
+        if not self.values:
+            return None
+        ordered = sorted(self.values)
+        rank = (len(ordered) - 1) * self.fraction
+        low = int(rank)
+        high = min(low + 1, len(ordered) - 1)
+        return ordered[low] + (ordered[high] - ordered[low]) * (rank - low)
 
 
 def _regexp(pattern: str, value: Any) -> bool:

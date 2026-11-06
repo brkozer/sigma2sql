@@ -165,6 +165,55 @@ detection:
         ],
         [("h1", 2)],
     ),
+    (
+        "value_median over a group",
+        """
+title: Transfer
+name: transfer
+detection:
+  sel: {Action: download}
+  condition: sel
+---
+title: Typical download size
+correlation:
+  type: value_median
+  rules: [transfer]
+  group-by: [User]
+  condition: {field: Bytes, gte: 200}
+""",
+        [
+            {"Action": "download", "User": "a", "Bytes": 100, "timestamp": t(0)},
+            {"Action": "download", "User": "a", "Bytes": 200, "timestamp": t(1)},
+            {"Action": "download", "User": "a", "Bytes": 9000, "timestamp": t(2)},
+            {"Action": "download", "User": "b", "Bytes": 100, "timestamp": t(0)},
+            {"Action": "download", "User": "b", "Bytes": 199, "timestamp": t(1)},
+            {"Action": "upload", "User": "b", "Bytes": 9000, "timestamp": t(2)},
+        ],
+        [("a", 200)],
+    ),
+    (
+        "value_percentile interpolates, in a window",
+        """
+title: Transfer
+name: transfer
+detection:
+  sel: {Action: download}
+  condition: sel
+---
+title: Large downloads
+correlation:
+  type: value_percentile
+  rules: [transfer]
+  timespan: 10m
+  condition: {field: Bytes, percentile: 75, gte: 250}
+""",
+        [
+            {"Action": "download", "Bytes": 100, "timestamp": t(0)},
+            {"Action": "download", "Bytes": 200, "timestamp": t(1)},
+            {"Action": "download", "Bytes": 300, "timestamp": t(2)},
+        ],
+        [(250,)],
+    ),
 ]
 
 
@@ -264,6 +313,15 @@ def test_referenced_rules_are_not_standalone() -> None:
     ("spec", "message"),
     [
         ("type: temporal_ordered\n  rules: [a]", "temporal_ordered"),
+        ("type: value_median\n  rules: [a]\n  condition: {gte: 2}", "condition field"),
+        (
+            "type: value_percentile\n  rules: [a]\n  condition: {field: f, gte: 2}",
+            "percentile",
+        ),
+        (
+            "type: value_percentile\n  rules: [a]\n  condition: {field: f, percentile: 101, lt: 2}",
+            "percentile",
+        ),
         ("type: value_count\n  rules: [a]\n  condition: {gte: 2}", "condition field"),
         ("type: event_count\n  rules: [a]\n  timespan: 5x\n  condition: {gte: 2}", "timespan"),
         ("type: event_count\n  rules: [a]\n  condition: {gte: two}", "condition"),

@@ -24,6 +24,9 @@ PROCS = [
     {"Image": "C:\\Windows\\notepad.exe"},
 ]
 
+LINES = [{"A": "one\ntwo"}, {"A": "three"}]
+TIMES = [{"When": "2026-11-01T03:12:45Z"}, {"When": "2027-01-01T23:59:00Z"}, {"Other": 1}]
+
 CASES: list[Case] = [
     (
         "endswith is case-insensitive",
@@ -220,6 +223,39 @@ CASES: list[Case] = [
         [{"msg": "mimikatz # sekurlsa::logonpasswords"}, {"msg": "mimikatz # lsadump::sam"}],
         [1],
     ),
+    (
+        "neq negates the match and is true on a missing field",
+        "sel: {CommandLine|contains|neq: [whoami, dir]}\ncondition: sel",
+        PROCS,
+        [2, 3],
+    ),
+    (
+        "neq on a plain value",
+        "sel: {Image|neq: 'c:\\windows\\notepad.exe'}\ncondition: sel",
+        PROCS,
+        [0, 1, 2],
+    ),
+    ("regex anchors stop at the start", "sel: {A|re: '^two'}\ncondition: sel", LINES, []),
+    ("regex m flag", "sel: {A|re|m: '^two'}\ncondition: sel", LINES, [0]),
+    ("regex multiline name", "sel: {A|re|multiline: '^two'}\ncondition: sel", LINES, [0]),
+    ("regex s flag", "sel: {A|re|s: 'one.two'}\ncondition: sel", LINES, [0]),
+    ("regex dotall name", "sel: {A|re|dotall: 'one.two'}\ncondition: sel", LINES, [0]),
+    ("regex i and m", "sel: {A|re|i|m: '^TWO'}\ncondition: sel", LINES, [0]),
+    ("regex m and s", "sel: {A|re|m|s: '^one.two$'}\ncondition: sel", LINES, [0]),
+    (
+        "inline flags merge with modifiers",
+        "sel: {A|re|i: '(?s)ONE.TWO'}\ncondition: sel",
+        LINES,
+        [0],
+    ),
+    ("repeated inline flag", "sel: {A|re|i: '(?i)ONE'}\ncondition: sel", LINES, [0]),
+    ("timestamp minute", "sel: {When|minute: 12}\ncondition: sel", TIMES, [0]),
+    ("timestamp hour", "sel: {When|hour: [3, 23]}\ncondition: sel", TIMES, [0, 1]),
+    ("timestamp day", "sel: {When|day: 1}\ncondition: sel", TIMES, [0, 1]),
+    ("timestamp month", "sel: {When|month: 11}\ncondition: sel", TIMES, [0]),
+    ("timestamp year", "sel: {When|year: 2027}\ncondition: sel", TIMES, [1]),
+    ("timestamp ISO week", "sel: {When|week: 44}\ncondition: sel", TIMES, [0]),
+    ("ISO week spanning new year", "sel: {When|week: 53}\ncondition: sel", TIMES, [1]),
 ]
 
 

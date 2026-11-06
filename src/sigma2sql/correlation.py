@@ -36,8 +36,13 @@ def correlation_query(corr: Correlation, rules: list[Rule], target: Target) -> s
             return f"COUNT(DISTINCT {b}sigma_value)"
         if corr.type == "temporal":
             return f"COUNT(DISTINCT {b}sigma_rule)"
-        fn = "SUM" if corr.type == "value_sum" else "AVG"
-        return f"{fn}({r.cast_number(b + 'sigma_value')})"
+        value = r.cast_number(b + "sigma_value")
+        if corr.type == "value_median":
+            return r.percentile(value, 0.5)
+        if corr.type == "value_percentile":
+            assert corr.percentile is not None
+            return r.percentile(value, corr.percentile / 100)
+        return f"{'SUM' if corr.type == 'value_sum' else 'AVG'}({value})"
 
     def having(b: str) -> str:
         agg = aggregate(b)

@@ -16,11 +16,13 @@ from sigma2sql.expr import (
     Exists,
     Expr,
     FieldRef,
+    Not,
     NullMatch,
     NumMatch,
     Regex,
     SigmaString,
     StrMatch,
+    TimePart,
     all_of,
     any_of,
 )
@@ -30,15 +32,31 @@ COMPARE: dict[str, Literal["<", "<=", ">", ">="]] = {"lt": "<", "lte": "<=", "gt
 # Text encodings applied before base64; `utf16` adds the little-endian byte order mark.
 ENCODINGS = {"wide": "utf-16-le", "utf16le": "utf-16-le", "utf16be": "utf-16-be", "utf16": "utf-16"}
 BASE64 = {"base64", "base64offset"}
+TIME_PARTS: dict[str, Literal["minute", "hour", "day", "week", "month", "year"]] = {
+    "minute": "minute",
+    "hour": "hour",
+    "day": "day",
+    "week": "week",
+    "month": "month",
+    "year": "year",
+}
+REGEX_FLAGS = {"i", "m", "s"}
+FLAG_NAMES = {"ignorecase": "i", "multiline": "m", "dotall": "s"}
+# Flags written at the start of a pattern, merged with the ones from modifiers.
+INLINE_FLAGS = re.compile(r"\(\?([ims]+)\)")
 KNOWN = (
     POSITION
     | set(COMPARE)
     | set(ENCODINGS)
     | BASE64
-    | {"all", "cased", "windash", "re", "i", "cidr", "exists", "fieldref", "expand"}
+    | set(TIME_PARTS)
+    | REGEX_FLAGS
+    | {"all", "cased", "windash", "re", "cidr", "exists", "fieldref", "expand", "neq"}
 )
 # Modifiers that make sense on keywords (searches over the whole event).
-KEYWORD_MODS = POSITION | set(ENCODINGS) | BASE64 | {"all", "cased", "windash", "re", "i", "expand"}
+KEYWORD_MODS = (
+    POSITION | set(ENCODINGS) | BASE64 | REGEX_FLAGS | {"all", "cased", "windash", "re", "expand"}
+)
 
 # Characters Windows command-line tools accept in place of a leading dash.
 WINDASH = ("-", "/", "–", "—", "―")
@@ -84,10 +102,18 @@ def _compile_map(name: str, mapping: dict[Any, Any], placeholders: Placeholders)
 
 
 def _compile_field(key: str, value: Any, placeholders: Placeholders) -> Expr:
-    name, *mods = key.split("|")
+    name, *raw_mods = key.split("|")
+    mods = [FLAG_NAMES.get(m, m) for m in raw_mods]
     for mod in mods:
         if mod not in KNOWN:
             raise UnsupportedRule(f"modifier {mod!r} is not supported")
+    if "neq" in mods:
+        if not name:
+            raise UnsupportedRule("modifier 'neq' is not supported on keywords")
+        rest = "|".join([name, *(m for m in mods if m != "neq")])
+        return Not(_compile_field(rest, value, placeholders))
+    if REGEX_FLAGS & set(mods) and "re" not in mods:
+        raise RuleError(f"{name or 'keywords'}: regex flags need the re modifier")
     # `'|all': [a, b]` is a keyword search: no field, matched anywhere in the event.
     field: str | None = name or None
     label = name or "keywords"
@@ -107,7 +133,7 @@ def _compile_field(key: str, value: Any, placeholders: Placeholders) -> Expr:
 
     items: list[Expr]
     if field is None and "re" in mods:
-        items = [Regex(None, _as_text(v), ignore_case="i" in mods) for v in values]
+        items = [_regex(None, v, mods) for v in values]
     elif field is None:
         items = [
             _strings(None, v, mods, "contains", "cased" in mods) for v in values if v is not None
@@ -121,13 +147,17 @@ def _compile_field(key: str, value: Any, placeholders: Placeholders) -> Expr:
     elif "fieldref" in mods:
         items = [FieldRef(field, _as_text(v)) for v in values]
     elif "re" in mods:
-        items = [Regex(field, _as_text(v), ignore_case="i" in mods) for v in values]
+        items = [_regex(field, v, mods) for v in values]
     elif "cidr" in mods:
         items = [Cidr(field, _network(field, v)) for v in values]
     elif compare := [m for m in mods if m in COMPARE]:
         if len(compare) > 1:
             raise RuleError(f"field {field!r} has more than one comparison modifier")
         items = [Compare(field, COMPARE[compare[0]], _number(field, v)) for v in values]
+    elif parts := [m for m in mods if m in TIME_PARTS]:
+        if len(parts) > 1:
+            raise RuleError(f"field {field!r} has more than one timestamp part modifier")
+        items = [TimePart(field, TIME_PARTS[parts[0]], int(_number(field, v))) for v in values]
     else:
         position = [m for m in mods if m in POSITION]
         if len(position) > 1:
@@ -138,6 +168,15 @@ def _compile_field(key: str, value: Any, placeholders: Placeholders) -> Expr:
         ]
 
     return all_of(items) if "all" in mods else any_of(items)
+
+
+def _regex(field: str | None, value: Any, mods: list[str]) -> Regex:
+    pattern = _as_text(value)
+    flags = REGEX_FLAGS & set(mods)
+    if inline := INLINE_FLAGS.match(pattern):
+        flags |= set(inline[1])
+        pattern = pattern[inline.end() :]
+    return Regex(field, pattern, "".join(sorted(flags)))
 
 
 def _expand(value: Any, placeholders: Placeholders) -> list[Any]:

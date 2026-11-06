@@ -92,7 +92,7 @@ class Exists:
 class Regex:
     field: str | None  # None means the whole event
     pattern: str
-    ignore_case: bool = False
+    flags: str = ""  # any of i, m, s, as in Python's re
 
 
 @dataclass(frozen=True)
@@ -106,6 +106,13 @@ class Compare:
     field: str
     op: Literal["<", "<=", ">", ">="]
     value: int | float
+
+
+@dataclass(frozen=True)
+class TimePart:
+    field: str
+    part: Literal["minute", "hour", "day", "week", "month", "year"]
+    value: int
 
 
 @dataclass(frozen=True)
@@ -129,7 +136,20 @@ class Not:
     item: Expr
 
 
-Expr = StrMatch | NumMatch | NullMatch | Exists | Regex | Cidr | Compare | FieldRef | And | Or | Not
+Expr = (
+    StrMatch
+    | NumMatch
+    | NullMatch
+    | Exists
+    | Regex
+    | Cidr
+    | Compare
+    | TimePart
+    | FieldRef
+    | And
+    | Or
+    | Not
+)
 
 
 def all_of(items: list[Expr]) -> Expr:

@@ -14,14 +14,25 @@ from sigma2sql.detection import Placeholders, compile_search
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.expr import Expr, all_of, any_of
 
-CorrelationType = Literal["event_count", "value_count", "value_sum", "value_avg", "temporal"]
+CorrelationType = Literal[
+    "event_count",
+    "value_count",
+    "value_sum",
+    "value_avg",
+    "value_median",
+    "value_percentile",
+    "temporal",
+]
 CORRELATION_TYPES: tuple[CorrelationType, ...] = (
     "event_count",
     "value_count",
     "value_sum",
     "value_avg",
+    "value_median",
+    "value_percentile",
     "temporal",
 )
+VALUE_TYPES = ("value_count", "value_sum", "value_avg", "value_median", "value_percentile")
 OPS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "="}
 LEGACY_OPS = {">": "gt", ">=": "gte", "<": "lt", "<=": "lte", "=": "eq", "==": "eq"}
 TIMESPAN = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$")
@@ -96,6 +107,7 @@ class Correlation:
     timespan: int | None = None  # seconds
     condition: Condition = ()
     field: str | None = None
+    percentile: float | None = None  # 0 to 100, for value_percentile
     aliases: Mapping[str, Mapping[str, str]] = dataclasses.field(default_factory=dict)
     generate: bool = False
     name: str | None = None
@@ -289,7 +301,7 @@ def _correlation(doc: dict[str, Any], path: Path | None) -> Correlation:
     value_field = raw_condition.get("field", spec.get("field"))
     condition: list[tuple[str, float]] = []
     for op, value in raw_condition.items():
-        if op == "field":
+        if op in ("field", "percentile"):
             continue
         if op not in OPS or isinstance(value, bool) or not isinstance(value, int | float):
             raise RuleError(f"invalid correlation condition {op}: {value!r}")
@@ -298,8 +310,15 @@ def _correlation(doc: dict[str, Any], path: Path | None) -> Correlation:
         condition = [("gte", float(len(rules)))]
     if not condition:
         raise RuleError("correlation needs a condition")
-    if kind in ("value_count", "value_sum", "value_avg") and not value_field:
+    if kind in VALUE_TYPES and not value_field:
         raise RuleError(f"{kind} correlations need a condition field")
+    percentile = raw_condition.get("percentile")
+    if kind == "value_percentile" and (
+        isinstance(percentile, bool)
+        or not isinstance(percentile, int | float)
+        or not 0 <= percentile <= 100
+    ):
+        raise RuleError("value_percentile correlations need a percentile from 0 to 100")
 
     aliases = spec.get("aliases") or {}
     if not isinstance(aliases, dict) or not all(isinstance(v, dict) for v in aliases.values()):
@@ -313,6 +332,7 @@ def _correlation(doc: dict[str, Any], path: Path | None) -> Correlation:
         timespan=_timespan(timespan) if timespan is not None else None,
         condition=tuple(condition),
         field=str(value_field) if value_field else None,
+        percentile=float(percentile) if isinstance(percentile, int | float) else None,
         aliases={str(k): {str(r): str(f) for r, f in v.items()} for k, v in aliases.items()},
         generate=bool(spec.get("generate", False)),
         **_meta(doc, path),
