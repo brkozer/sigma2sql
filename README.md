@@ -8,7 +8,7 @@
 Run [Sigma](https://sigmahq.io) detection rules as SQL on **SQLite**, **PostgreSQL**,
 **DuckDB** and **ClickHouse**: hunt through log files, `.evtx` included, without a SIEM,
 convert rules for the database your logs already live in, and unit-test rules before they
-reach production.
+reach production. Full documentation: [brkozer.github.io/sigma2sql](https://brkozer.github.io/sigma2sql/).
 
 - **All of SigmaHQ converts**: the 3807 rules in its five rule folders on SQLite, DuckDB and
   ClickHouse, 3804 on PostgreSQL, plus all 45 `count()` aggregation rules SigmaHQ keeps under

@@ -25,6 +25,7 @@ dependencies = ["pyyaml>=6.0.2"]
 
 [project.urls]
 Homepage = "https://github.com/brkozer/sigma2sql"
+Documentation = "https://brkozer.github.io/sigma2sql/"
 Issues = "https://github.com/brkozer/sigma2sql/issues"
 Changelog = "https://github.com/brkozer/sigma2sql/blob/main/CHANGELOG.md"
 
@@ -49,6 +50,8 @@ dev = [
     "ruff>=0.17.3",
     "types-pyyaml>=6.0.12",
 ]
+# pinned exactly: zensical is pre-1.0
+docs = ["zensical==0.0.74"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
