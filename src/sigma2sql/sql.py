@@ -219,16 +219,24 @@ class Renderer:
     def column(self, sigma_field: str) -> str:
         name = self.t.mapping.get(sigma_field)
         if name is None:
-            templates = self.t.default_field
-            if isinstance(templates, str):
-                templates = (templates,)
+            templates = self._templates()
             name = _expand(templates, sigma_field) if templates else sigma_field
         return self._located(name)
 
     def time_column(self) -> str:
-        """The event time is a place in the event, not a Sigma field: `default_field` says
-        where a rule's fields are kept, and applying it here would point at nothing."""
-        return self._located(self.t.mapping.get(self.t.timestamp, self.t.timestamp))
+        """The event time: a profile gives its full path, which `default_field` must not
+        move, while a plain name such as `UtcTime` can sit with the other fields."""
+        name = self.t.mapping.get(self.t.timestamp)
+        if name is None:
+            templates = self._templates()
+            name = _expand(templates, self.t.timestamp) if templates else self.t.timestamp
+            if templates and self.json:
+                name = (self.t.timestamp, *name)
+        return self._located(name)
+
+    def _templates(self) -> tuple[str, ...]:
+        templates = self.t.default_field or ()
+        return (templates,) if isinstance(templates, str) else templates
 
     def _located(self, name: str | Sequence[str]) -> str:
         if not isinstance(name, str):
@@ -254,7 +262,8 @@ class Renderer:
             return f"{col}#>>{self.lit('{' + ','.join(parts) + '}')}"
         path = self.lit("$" + "".join("." + p for p in parts))
         if self.d == "duckdb":
-            return f"{col}->>{path}"
+            # Parentheses: before DuckDB 2.0, `a AND b->>c = d` parses as `(a AND b)->>...`.
+            return f"({col}->>{path})"
         return f"json_extract({col}, {path})"
 
     def number(self, col: str) -> str:
@@ -406,6 +415,8 @@ NOT_A_NUMBER = (
     "*[0-9.][+-]*",
     "*[+-][+eE-]*",
     "[eE]*",
+    ".[eE]*",
+    "[+-].[eE]*",
     "*[eE+-]",
 )
 
@@ -419,8 +430,9 @@ def _sqlite_number(expr: str) -> str:
 
 
 def _clickhouse_number(text: str) -> str:
-    """toFloat64OrNull reads an exponent with no digits before it, such as `e5`, as 0."""
-    return f"if(match({text}, '^[+-]?[.]?[0-9]'), toFloat64OrNull({text}), NULL)"
+    """toFloat64OrNull reads `e5` as 0, `1e+` as 1 and also takes `nan` and `inf`."""
+    pattern = "^[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?$"
+    return f"if(match({text}, '{pattern}'), toFloat64OrNull({text}), NULL)"
 
 
 def _uncased(item: Expr) -> TypeGuard[StrMatch]:

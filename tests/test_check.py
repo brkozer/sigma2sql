@@ -33,8 +33,78 @@ def test_invalid_regex_fails_only_that_rule(
     sarif = tmp_path / "out.sarif"
     assert main(["check", str(tmp_path), "--sarif", str(sarif)]) == 1
     out = capsys.readouterr()
-    assert "regex invalid" in out.out and "ok   " in out.out
+    assert "invalid regex" in out.out and "ok   " in out.out
     assert sarif.exists()
+
+
+def test_invalid_regex_no_event_reaches_is_still_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "a.yml").write_text(BAD_REGEX)
+    (tmp_path / "a.nomatch.jsonl").write_text('{"Other": 1}\n')
+    assert main(["check", str(tmp_path)]) == 1
+    assert "invalid regex" in capsys.readouterr().out
+
+
+def test_rules_without_tests_are_still_loaded(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "broken.yml").write_text("title: [unclosed")
+    (tmp_path / "latin.yml").write_bytes("title: caf\xe9\n".encode("latin-1"))
+    (tmp_path / "regex.yml").write_text(BAD_REGEX)
+    (tmp_path / "fine.yml").write_text(RULE)
+    assert main(["check", str(tmp_path)]) == 1
+    assert "0 passed, 3 failed, 1 without tests" in capsys.readouterr().err
+
+
+def test_an_empty_folder_next_to_a_good_one_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "a.yml").write_text(RULE)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert main(["check", str(good), str(empty)]) == 2
+
+
+def test_test_with_no_rule_is_an_error(tmp_path: Path) -> None:
+    events = tmp_path / "e.jsonl"
+    events.write_text("{}\n")
+    assert main(["test", str(tmp_path), str(events), "--expect", "match"]) == 2
+
+
+def test_upper_case_suffixes_are_rule_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "a.YML").write_text(RULE)
+    assert main(["check", str(tmp_path)]) == 0
+    assert "1 without tests" in capsys.readouterr().err
+
+
+def test_line_separator_inside_a_string(tmp_path: Path) -> None:
+    rule = tmp_path / "a.yml"
+    rule.write_text("title: k\ndetection:\n  s: {A: 1}\n  condition: s\n")
+    events = tmp_path / "e.jsonl"
+    events.write_text('{"A": 1, "M": "x\u2028y"}\n', encoding="utf-8")
+    assert main(["test", str(rule), str(events), "--expect", "match"]) == 0
+
+
+def test_json_nested_too_deeply_is_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "cmd.yml").write_text(RULE)
+    (tmp_path / "cmd.match.jsonl").write_text("[" * 200000 + "\n")
+    assert main(["check", str(tmp_path)]) == 1
+    assert "nested too deeply" in capsys.readouterr().out
+
+
+def test_a_lone_surrogate_in_an_event(tmp_path: Path) -> None:
+    rule = tmp_path / "a.yml"
+    rule.write_text("title: k\ndetection:\n  s: {M|re: 'x.y'}\n  condition: s\n")
+    events = tmp_path / "e.jsonl"
+    events.write_text('{"M": "x\\ud83dy"}\n')
+    assert main(["test", str(rule), str(events), "--expect", "match"]) == 0
 
 
 def test_invalid_regex_in_test_is_exit_2(

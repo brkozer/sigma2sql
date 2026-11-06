@@ -155,7 +155,33 @@ def test_a_time_without_a_zone_is_utc(
     assert example["window_end"].startswith("2026-11-01 03:12:01")
 
 
-def test_a_negative_example_count_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_hunt_where_no_rule_could_run_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rule = tmp_path / "a.yml"
+    rule.write_bytes(b"title: caf\xe9\n")
+    assert main(["hunt", str(rule), "--logs", EVENTS]) == 2
+    assert "no rule could run" in capsys.readouterr().err
+
+
+def test_example_failure_keeps_the_hunt_going(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rule = tmp_path / "r.yml"
+    rule.write_text(
+        "title: base\nname: base\ndetection: {s: {A: 1}, condition: s}\n---\n"
+        "title: c\ncorrelation: {type: event_count, rules: [base], condition: {gte: 1}}\n"
+    )
+    logs = tmp_path / "e.jsonl"
+    logs.write_text('{"A": 1, "ts": "nan"}\n')
+    args = ["--timestamp-field", "ts", "--timestamp-format", "epoch_s", "-e", "1"]
+    assert main(["hunt", str(rule), "--logs", str(logs), *args]) == 0
+    assert "no examples" in capsys.readouterr().err
+
+
+def test_a_negative_example_count_is_refused(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     with pytest.raises(SystemExit) as stopped:
         main(["hunt", RULES, "--logs", EVENTS, "-e", "-1"])
     assert stopped.value.code == 2
@@ -170,6 +196,7 @@ def test_a_second_log_without_events_keeps_the_first(
     bad.write_text("")
     rule = str(EXAMPLES / "rules" / "office_spawns_shell.yml")
     assert main(["hunt", rule, "--logs", str(good), str(bad)]) == 0
+    assert "read with the evtx profile" in capsys.readouterr().err
 
 
 def test_hunt_expands_evtx_globs(

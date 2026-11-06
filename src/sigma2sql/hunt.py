@@ -98,8 +98,8 @@ def _load_evtx(con: Any, pattern: str, warnings: list[str]) -> None:
         raise ValueError(f"{pattern}: no such file")
     with tempfile.TemporaryDirectory() as tmp:
         lines = Path(tmp) / "events.jsonl"
-        # backslashreplace: a lone surrogate stays a JSON escape instead of ending the hunt.
-        with lines.open("w", encoding="utf-8", errors="backslashreplace") as out:
+        # replace: a lone surrogate has no UTF-8 form and must not end the hunt.
+        with lines.open("w", encoding="utf-8", errors="replace") as out:
             for file in files:
                 for event in _evtx_events(file, warnings):
                     out.write(event + "\n")
@@ -173,7 +173,10 @@ def hunt(
         sample: list[str] = []
         if examples:
             shown = f"SELECT CAST(to_json(q) AS VARCHAR) FROM ({query}) q" if as_rows else query
-            sample = [row[0] for row in con.execute(f"{shown} LIMIT {examples}").fetchall()]
+            try:
+                sample = [row[0] for row in con.execute(f"{shown} LIMIT {examples}").fetchall()]
+            except Exception as exc:  # e.g. a time value out of range in one result row
+                warnings.append(f"{item.title}: no examples: {str(exc).splitlines()[0]}")
         hits.append(Hit(item, count, sample))
     hits.sort(key=lambda h: (h.rank, -h.count, h.rule.title))
     other_logs = len(candidates) - len(items)

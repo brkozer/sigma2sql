@@ -7,7 +7,7 @@ branding:
 
 inputs:
   path:
-    description: Rule files or directories to check (space separated)
+    description: Rule files or directories to check, separated by spaces or newlines
     default: rules
   profile:
     description: Built-in profile name or path to a profile YAML (field mapping, logsource conditions)
@@ -40,7 +40,7 @@ runs:
         SARIF: ${{ inputs.sarif }}
       run: |
         args=(check)
-        read -ra paths <<< "$RULE_PATHS"
+        read -d '' -ra paths <<< "$RULE_PATHS" || true
         args+=("${paths[@]}")
         if [ -n "$PROFILE" ]; then args+=(--profile "$PROFILE"); fi
         if [ "$REQUIRE_TESTS" = "true" ]; then args+=(--require-tests); fi

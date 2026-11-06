@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -17,6 +18,7 @@ import yaml
 from sigma2sql.collection import Collection, rule_files
 from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
+from sigma2sql.expr import regexes
 from sigma2sql.hunt import LEVELS, Hit, Report, hunt
 from sigma2sql.profile import apply_profile, builtin_profiles, load_placeholders, load_profile
 from sigma2sql.rule import Correlation, Document
@@ -138,6 +140,8 @@ def _target(args: argparse.Namespace) -> Target:
     if args.command == "hunt" and not profile and any(_is_evtx(p) for p in args.logs):
         # EVTX events have one known layout, so the right profile needs no asking.
         profile = "evtx"
+        if not all(_is_evtx(p) for p in args.logs):
+            print("warning: all logs are read with the evtx profile", file=sys.stderr)
     if profile:
         target = apply_profile(target, load_profile(profile))
     if args.placeholders:
@@ -159,19 +163,36 @@ def _report_errors(col: Collection) -> None:
 
 
 def _no_rules(paths: list[Path]) -> bool:
-    """Report a rule path that leads nowhere: in CI a mistyped one must not pass."""
+    """Report rule paths that lead nowhere: in CI a mistyped one must not pass."""
+    problems: list[str] = []
     for path in paths:
-        if not path.exists():
-            print(f"sigma2sql: {path}: no such file or directory", file=sys.stderr)
-            return True
-    if not any(True for _ in rule_files(paths)):
-        print("sigma2sql: no .yml or .yaml files found", file=sys.stderr)
-        return True
-    return False
+        try:
+            if not path.exists():
+                problems.append(f"{path}: no such file or directory")
+            elif not any(True for _ in rule_files([path])):
+                problems.append(f"{path}: no .yml or .yaml files found")
+        except OSError as exc:
+            problems.append(str(exc))
+    for problem in problems:
+        print(f"sigma2sql: {problem}", file=sys.stderr)
+    return bool(problems)
+
+
+def _validate(item: Document, col: Collection, target: Target) -> None:
+    """What `check` and `test` can refuse without events: SQLite only evaluates a regex for
+    an event that gets that far, so a broken one would pass unnoticed."""
+    _sql(item, col, runner_target(target))
+    rules = col.resolve(item) if isinstance(item, Correlation) else [item]
+    for rule in rules:
+        for found in regexes(rule.compile(target.placeholders)):
+            try:
+                re.compile(found.pattern)
+            except re.error as exc:
+                raise RuleError(f"invalid regex {found.pattern!r}: {exc}") from exc
 
 
 def _query_failed(item: Document, exc: sqlite3.Error) -> str:
-    return f"{item.title}: SQLite could not run the query ({exc}); is a regex invalid?"
+    return f"{item.title}: SQLite could not run the query: {exc}"
 
 
 def _sql(item: Document, col: Collection, target: Target) -> str:
@@ -204,6 +225,8 @@ def _convert(paths: list[Path], target: Target) -> int:
 
 
 def _test(path: Path, events_path: Path, target: Target, expect: str | None) -> int:
+    if _no_rules([path]):
+        return 2
     col = Collection.load([path])
     if col.errors:
         _report_errors(col)
@@ -213,11 +236,13 @@ def _test(path: Path, events_path: Path, target: Target, expect: str | None) -> 
     except (OSError, ValueError) as exc:
         print(f"sigma2sql: {exc}", file=sys.stderr)
         return 2
-    lines = [line for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    text = events_path.read_text(encoding="utf-8")
+    lines = [line for line in text.split("\n") if line.strip()]
     matched: list[bool] = []
     items: list[Document] = [*col.standalone(), *col.correlations]
     for item in items:
         try:
+            _validate(item, col, target)
             if isinstance(item, Correlation) or item.aggregation is not None:
                 found: list[Any] = rows(_sql(item, col, runner_target(target)), events)
                 for row in found:
@@ -269,20 +294,19 @@ def _check(paths: list[Path], target: Target, require_tests: bool, sarif: Path |
             for f in (path.with_suffix(".match.jsonl"), path.with_suffix(".nomatch.jsonl"))
             if f.exists()
         ]
-        if not cases:
-            untested += 1
-            if require_tests:
-                failed += 1
-                fail(path, f"no {path.stem}.match.jsonl or .nomatch.jsonl")
-            continue
         problems = _check_rule(path, cases, target)
         if problems:
             failed += 1
             for problem in problems:
                 fail(path, problem)
-        else:
+        elif cases:
             passed += 1
             print(f"ok   {path}")
+        else:
+            untested += 1
+            if require_tests:
+                failed += 1
+                fail(path, f"no {path.stem}.match.jsonl or .nomatch.jsonl")
     print(f"{passed} passed, {failed} failed, {untested} without tests", file=sys.stderr)
     if sarif and not _write_sarif(sarif, findings):
         return 2
@@ -294,7 +318,14 @@ def _check_rule(path: Path, cases: list[tuple[Path, bool]], target: Target) -> l
     if col.errors:
         return [reason for _, reason in col.errors]
     problems: list[str] = []
-    items: list[Document] = [*col.standalone(), *col.correlations]
+    items: list[Document] = []
+    candidates: list[Document] = [*col.standalone(), *col.correlations]
+    for item in candidates:
+        try:
+            _validate(item, col, target)
+            items.append(item)
+        except (RuleError, UnsupportedRule) as exc:
+            problems.append(f"{item.title}: {exc}")
     for events_path, should_match in cases:
         try:
             events = read_jsonl(events_path.read_text(encoding="utf-8"))
@@ -354,6 +385,9 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
     if report_.other_logs:
         print(f"{report_.other_logs} rules are for other log sources", file=sys.stderr)
     if args.sarif and not _write_sarif(args.sarif, [_hit_finding(h) for h in report_.hits]):
+        return 2
+    if not report_.ran and (report_.skipped or col.errors):
+        print("sigma2sql: no rule could run", file=sys.stderr)
         return 2
     if args.fail_on:
         limit = LEVELS.index(args.fail_on)

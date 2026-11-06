@@ -46,7 +46,7 @@ def load(events: list[dict[str, Any]]) -> sqlite3.Connection:
 def _stored(event: dict[str, Any]) -> str:
     """JSON as a log file holds it, so a keyword such as `Système` finds its text."""
     text = json.dumps(event, ensure_ascii=False)
-    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+    return text.encode("utf-8", "replace").decode("utf-8")  # a lone surrogate has no UTF-8
 
 
 def matching_events(
@@ -68,13 +68,16 @@ def rows(query: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def read_jsonl(text: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for n, line in enumerate(text.splitlines(), 1):
+    # Not splitlines(): U+2028 and the like are valid inside a JSON string.
+    for n, line in enumerate(text.split("\n"), 1):
         if not line.strip():
             continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError as exc:
             raise ValueError(f"line {n}: {exc}") from exc
+        except RecursionError as exc:
+            raise ValueError(f"line {n}: nested too deeply") from exc
         if not isinstance(event, dict):
             raise ValueError(f"line {n}: each event must be a JSON object")
         events.append(event)

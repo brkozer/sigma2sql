@@ -370,6 +370,20 @@ def test_time_window_with_a_profile(
     assert run(BRUTE_FORCE, [event(0), event(10), event(20)], profile) == []
 
 
+@pytest.mark.parametrize(
+    "run", [run_sqlite, run_duckdb, run_postgres, run_clickhouse], ids=lambda r: r.__name__[4:]
+)
+def test_time_field_kept_with_the_other_fields(
+    run: Callable[..., list[tuple[Any, ...]]], tmp_path: Any
+) -> None:
+    profile = tmp_path / "p.yml"
+    profile.write_text('nested: true\ntimestamp: ts\ndefault_field: "attrs.{field}"\n')
+    events = [
+        {"attrs": {"EventID": 4625, "TargetUserName": "admin", "ts": t(m)}} for m in (0, 1, 2)
+    ]
+    assert run(BRUTE_FORCE, events, str(profile)) == [("admin", 3)]
+
+
 def test_mapping_can_move_the_time_field() -> None:
     tgt = Target("duckdb", json_column="data", mapping={"timestamp": "when"})
     assert "$.when" in _sql(BRUTE_FORCE, tgt)[0].replace('"', "")

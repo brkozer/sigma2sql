@@ -70,6 +70,6 @@ class Collection:
 def rule_files(paths: Iterable[Path]) -> Iterator[Path]:
     for path in paths:
         if path.is_dir():
-            yield from sorted(p for p in path.rglob("*") if p.suffix in (".yml", ".yaml"))
+            yield from sorted(p for p in path.rglob("*") if p.suffix.lower() in (".yml", ".yaml"))
         else:
             yield path
