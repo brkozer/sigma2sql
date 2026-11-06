@@ -13,6 +13,14 @@
   `minute`, `hour`, `day`, `week`, `month`, `year`.
 - Correlations `value_median` and `value_percentile`.
 - `i`, `m` and `s` without `re` are now an error instead of being ignored.
+- Fix: `hunt` over SigmaHQ's whole rule set ran out of memory on any log with events, because
+  four rules list thousands of patterns for one field. DuckDB now gets such a list as a single
+  test, and a rule that fails no longer ends the hunt. CI runs every query over real events
+  now; the check used empty tables before, which is why this went unnoticed.
+- Fix: on PostgreSQL one bad value, such as the `-` Windows logs write in `IpAddress`, ended
+  the whole query in `cidr`, number comparisons and correlations. Such values are now skipped,
+  which needs PostgreSQL 16 or newer.
+- Fix: on SQLite text in a number field counted as 0, so `Port|lt: 100` matched `n/a`.
 - Coverage is now measured on all five SigmaHQ rule folders, not only `rules/`: 3807/3807 on
   SQLite, DuckDB and ClickHouse, 3804/3807 on PostgreSQL. The README used to say "every
   SigmaHQ rule" for `rules/` alone, where 27 placeholder rules elsewhere did not convert.

@@ -167,6 +167,30 @@ detection:
         [("h1", 2)],
     ),
     (
+        "bad numbers and timestamps do not end a correlation",
+        """
+title: Transfer
+name: transfer
+detection:
+  sel: {Action: download}
+  condition: sel
+---
+title: Total
+correlation:
+  type: value_sum
+  rules: [transfer]
+  timespan: 10m
+  condition: {field: Bytes, gte: 300}
+""",
+        [
+            {"Action": "download", "Bytes": 100, "timestamp": t(0)},
+            {"Action": "download", "Bytes": "-", "timestamp": t(1)},
+            {"Action": "download", "Bytes": 200, "timestamp": t(2)},
+            {"Action": "download", "Bytes": 900, "timestamp": "not a time"},
+        ],
+        [(300,)],
+    ),
+    (
         "value_median over a group",
         """
 title: Transfer

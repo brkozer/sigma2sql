@@ -246,7 +246,9 @@ elsewhere, register `regexp(pattern, value)`, `cidr_match(value, network)` and, 
 percentiles, the aggregate `sigma_percentile(value, fraction)` yourself
 (`sigma2sql.runner.connect()` returns a SQLite connection with all three).<br>
 ² PostgreSQL rejects repetition counts above 255; those three rules are reported as
-unsupported rather than silently changed. Without `s`, `.` still matches a newline there.<br>
+unsupported rather than silently changed. Without `s`, `.` still matches a newline there.
+Values such as `-` in an address or number field are skipped with `pg_input_is_valid`, so
+`cidr`, comparisons and correlations need PostgreSQL 16 or newer.<br>
 ³ RE2: no lookaround or backreferences; such rules are reported as unsupported.<br>
 ⁴ Without `--json-column`, a missing value is only NULL in `Nullable` columns.<br>
 ⁵ Tested on ClickHouse 25.8. Correlations with `group-by` need `IS NOT DISTINCT FROM` in

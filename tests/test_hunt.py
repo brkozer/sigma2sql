@@ -232,3 +232,15 @@ def test_an_empty_log_is_fine(
     log.write_bytes(b"x" * 4096)
     assert main(["hunt", RULES, "--logs", str(log)]) == 0
     assert "warning" not in capsys.readouterr().err
+
+
+def test_a_failing_rule_does_not_end_the_hunt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "bad.yml"
+    bad.write_text("title: Bad regex\ndetection:\n  s: {Image|re: '('}\n  condition: s\n")
+    assert main(["hunt", RULES, str(bad), "--logs", EVENTS]) == 0
+    out = capsys.readouterr()
+    assert "Office application" in out.out
+    assert "skip" in out.err and "bad.yml" in out.err
+    assert "1 rules skipped" in out.err

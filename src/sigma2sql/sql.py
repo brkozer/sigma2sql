@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any, Literal, TypeGuard
 
 from sigma2sql.detection import compile_search
 from sigma2sql.errors import UnsupportedRule
@@ -157,7 +158,7 @@ class Renderer:
             case And(items):
                 return _join([self.render(i) for i in items], "AND")
             case Or(items):
-                return _join([self.render(i) for i in items], "OR")
+                return _join(self.alternatives(items), "OR")
             case Not(item):
                 # A missing field makes the inner test NULL; Sigma treats that as "no match",
                 # so the negation has to come out true rather than NULL.
@@ -182,7 +183,8 @@ class Renderer:
             case Cidr(f, network):
                 col = self.column(f)
                 if self.d == "postgres":
-                    return f"({col})::inet <<= {self.lit(network)}::inet"
+                    address = _postgres_cast(col, "inet")
+                    return f"{address} <<= {self.lit(network)}::inet"
                 if self.d == "clickhouse":
                     # isIPAddressInRange raises on text that is not an address.
                     text = f"toString({col})"
@@ -196,6 +198,21 @@ class Renderer:
             case FieldRef(f, other):
                 return f"{self.column(f)} = {self.column(other)}"
         raise AssertionError(f"unhandled expression {expr!r}")
+
+    def alternatives(self, items: tuple[Expr, ...]) -> list[str]:
+        """The terms of an OR. DuckDB keeps memory per term and thread, so the thousands of
+        patterns some rules list for one field run it out of memory; those become one test."""
+        if self.d != "duckdb":
+            return [self.render(i) for i in items]
+        fields = Counter(i.field for i in items if _uncased(i))
+        long = [name for name, count in fields.items() if count > GROUP]
+        terms = [self.render(i) for i in items if not (_uncased(i) and i.field in long)]
+        for name in long:
+            col = self.keyword() if name is None else self.column(name)
+            patterns = [self.lit(_like(i.value)) for i in items if _uncased(i) and i.field == name]
+            test = f"lambda p: ilike_escape({col}, p, '\\')"
+            terms.append(f"len(list_filter([{', '.join(patterns)}], {test})) > 0")
+        return terms
 
     def column(self, sigma_field: str) -> str:
         name = self.t.mapping.get(sigma_field)
@@ -235,21 +252,21 @@ class Renderer:
         if not self.json:
             return col
         if self.d == "postgres":
-            return f"({col})::numeric"
+            return _postgres_cast(col, "numeric")
         if self.d == "duckdb":
             return f"TRY_CAST({col} AS DOUBLE)"
         if self.d == "clickhouse":
             return f"toFloat64OrNull({col})"
-        return f"CAST({col} AS REAL)"
+        return _sqlite_number(col)
 
     def cast_number(self, expr: str) -> str:
         if self.d == "postgres":
-            return f"CAST({expr} AS double precision)"
+            return _postgres_cast(expr, "double precision")
         if self.d == "duckdb":
             return f"TRY_CAST({expr} AS DOUBLE)"
         if self.d == "clickhouse":
             return f"toFloat64OrNull(toString({expr}))"
-        return f"CAST({expr} AS REAL)"
+        return _sqlite_number(expr)
 
     def epoch(self, col: str | None = None) -> str:
         """Seconds since 1970 of a time column, by default the configured timestamp field."""
@@ -259,7 +276,7 @@ class Renderer:
             seconds = self.cast_number(col)
             return seconds if fmt == "epoch_s" else f"({seconds} / 1000.0)"
         if self.d == "postgres":
-            return f"EXTRACT(EPOCH FROM CAST({col} AS timestamptz))"
+            return f"EXTRACT(EPOCH FROM {_postgres_cast(col, 'timestamptz')})"
         if self.d == "duckdb":
             return f"epoch(TRY_CAST({col} AS TIMESTAMPTZ))"
         if self.d == "clickhouse":
@@ -361,6 +378,23 @@ def _expand(templates: tuple[str, ...], sigma_field: str) -> tuple[str, ...]:
         if name not in names:
             names.append(name)
     return tuple(names)
+
+
+def _postgres_cast(expr: str, kind: str) -> str:
+    """A cast that gives NULL for bad values, as a failed cast would otherwise end the query:
+    Windows logs write `-` in address and number fields all the time."""
+    return f"CASE WHEN pg_input_is_valid(({expr})::text, '{kind}') THEN ({expr})::{kind} END"
+
+
+def _sqlite_number(expr: str) -> str:
+    """CAST alone turns text into 0, which would satisfy a `lt` comparison."""
+    text = f"CAST({expr} AS TEXT)"
+    numeric = f"{text} GLOB '*[0-9]*' AND {text} NOT GLOB '*[^0-9.eE+-]*'"
+    return f"CASE WHEN {numeric} THEN CAST({expr} AS REAL) END"
+
+
+def _uncased(item: Expr) -> TypeGuard[StrMatch]:
+    return isinstance(item, StrMatch) and not item.cased
 
 
 def _postgres_flags(flags: str) -> str:

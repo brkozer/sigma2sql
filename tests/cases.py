@@ -235,6 +235,65 @@ CASES: list[Case] = [
         PROCS,
         [0, 1, 2],
     ),
+    (
+        "long value lists",
+        "sel:\n  A|contains:\n"
+        + "".join(f"    - needle{i}\n" for i in range(60))
+        + "    - 'x%y_z'\n    - 'back\\slash'\ncondition: sel",
+        [
+            {"A": "..NEEDLE59.."},
+            {"A": "no"},
+            {"A": "x%y_z"},
+            {"A": "xayb_z"},
+            {"A": "back\\slash"},
+            {"B": "needle1"},
+        ],
+        [0, 2, 4],
+    ),
+    (
+        "long value lists under not",
+        "sel:\n  A:\n" + "".join(f"    - v{i}\n" for i in range(60)) + "condition: not sel",
+        [{"A": "V7"}, {"A": "other"}, {"B": 1}],
+        [1, 2],
+    ),
+    (
+        "long lists next to cased and other fields",
+        "a:\n  A|contains:\n"
+        + "".join(f"    - n{i}x\n" for i in range(60))
+        + "b: {A|cased: Exact}\nc: {B: 1}\ncondition: 1 of them",
+        [{"A": "N3X"}, {"A": "Exact"}, {"A": "exact"}, {"B": 1}],
+        [0, 1, 3],
+    ),
+    (
+        "cidr skips values that are not addresses",
+        "sel: {Ip|cidr: 10.0.0.0/8}\ncondition: sel",
+        [{"Ip": "-"}, {"Ip": ""}, {"Ip": "server1"}, {"Ip": "10.1.2.3"}, {"Other": 1}],
+        [3],
+    ),
+    (
+        "not cidr keeps values that are not addresses",
+        "sel: {Ip|cidr: 10.0.0.0/8}\ncondition: not sel",
+        [{"Ip": "-"}, {"Ip": "10.1.2.3"}, {"Ip": "8.8.8.8"}],
+        [0, 2],
+    ),
+    (
+        "number comparisons skip text",
+        "sel: {Port|gt: 100}\ncondition: sel",
+        [{"Port": "n/a"}, {"Port": 443}, {"Port": "8080"}, {"Port": 22}],
+        [1, 2],
+    ),
+    (
+        "text is not a small number",
+        "sel: {Port|lt: 100}\ncondition: sel",
+        [{"Port": "n/a"}, {"Port": 22}, {"Port": "80"}, {"Port": 443}, {"Port": "-"}],
+        [1, 2],
+    ),
+    (
+        "timestamp parts skip text",
+        "sel: {When|hour: 3}\ncondition: sel",
+        [{"When": "-"}, {"When": "2026-11-01T03:12:45Z"}],
+        [1],
+    ),
     ("regex anchors stop at the start", "sel: {A|re: '^two'}\ncondition: sel", LINES, []),
     ("regex m flag", "sel: {A|re|m: '^two'}\ncondition: sel", LINES, [0]),
     ("regex multiline name", "sel: {A|re|multiline: '^two'}\ncondition: sel", LINES, [0]),

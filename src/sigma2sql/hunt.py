@@ -157,10 +157,13 @@ def hunt(
     for item in items:
         try:
             query, as_rows = _query(item, rules, target)
+            count = con.execute(f"SELECT COUNT(*) FROM ({query}) q").fetchone()[0]
         except (RuleError, UnsupportedRule) as exc:
             skipped.append((item, str(exc)))
             continue
-        count = con.execute(f"SELECT COUNT(*) FROM ({query}) q").fetchone()[0]
+        except Exception as exc:  # DuckDB's own errors: one bad rule must not end the hunt
+            skipped.append((item, str(exc).splitlines()[0]))
+            continue
         if not count:
             continue
         sample: list[str] = []

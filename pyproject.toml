@@ -29,7 +29,7 @@ Issues = "https://github.com/brkozer/sigma2sql/issues"
 Changelog = "https://github.com/brkozer/sigma2sql/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-duckdb = ["duckdb>=1.1", "numpy>=2.0"]
+duckdb = ["duckdb>=1.3", "numpy>=2.0"]
 evtx = [
     "evtx>=0.8",
 ]
@@ -39,7 +39,7 @@ sigma2sql = "sigma2sql.cli:main"
 
 [dependency-groups]
 dev = [
-    "duckdb>=1.1",
+    "duckdb>=1.3",
     "evtx>=0.8",
     "mypy>=2.4.1",
     "numpy>=2.0",
