@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -165,9 +166,9 @@ class Renderer:
                 # A missing field makes the inner test NULL; Sigma treats that as "no match",
                 # so the negation has to come out true rather than NULL.
                 return f"NOT COALESCE({self.render(item)}, FALSE)"
-            case StrMatch(f, value, cased):
+            case StrMatch(f, _, cased):
                 col = self.keyword() if f is None else self.column(f)
-                return self.string(col, value, cased)
+                return self.string(col, self.searched(expr), cased)
             case NumMatch(f, value):
                 col = self.column(f)
                 if not self.json:
@@ -211,7 +212,8 @@ class Renderer:
         terms = [self.render(i) for i in items if not (_uncased(i) and i.field in long)]
         for name in long:
             col = self.keyword() if name is None else self.column(name)
-            patterns = [self.lit(_like(i.value)) for i in items if _uncased(i) and i.field == name]
+            values = [self.searched(i) for i in items if _uncased(i) and i.field == name]
+            patterns = [self.lit(_like(v)) for v in values]
             test = f"lambda p: ilike_escape({col}, p, '\\')"
             terms.append(f"len(list_filter([{', '.join(patterns)}], {test})) > 0")
         return terms
@@ -337,6 +339,17 @@ class Renderer:
         if self.d == "clickhouse":
             return f"quantileExactInclusive({fraction})({expr})"
         return f"sigma_percentile({expr}, {fraction})"
+
+    def searched(self, item: StrMatch) -> SigmaString:
+        """A keyword in JSON mode is looked for in the document's text, where `C:\\Windows` and
+        a quote are escaped, so it has to be written the way that text holds it."""
+        if item.field is not None or self.t.keyword_column or not self.json:
+            return item.value
+        parts = tuple(
+            json.dumps(p, ensure_ascii=False)[1:-1] if isinstance(p, str) else p
+            for p in item.value.parts
+        )
+        return SigmaString(parts)
 
     def keyword(self) -> str:
         if self.t.keyword_column:

@@ -27,7 +27,44 @@ PROCS = [
 LINES = [{"A": "one\ntwo"}, {"A": "three"}]
 TIMES = [{"When": "2026-11-01T03:12:45Z"}, {"When": "2027-01-01T23:59:00Z"}, {"Other": 1}]
 
+ESCAPED = [
+    {"Image": "C:\\Windows\\cmd.exe"},
+    {"Line": 'say "hello" now'},
+    {"Line": "one\ttwo"},
+    {"Line": "first\nsecond"},
+    {"Other": "plain"},
+]
+
 CASES: list[Case] = [
+    (
+        "keyword with a backslash finds the value",
+        "keywords: ['C:\\Windows\\cmd.exe']\ncondition: keywords",
+        ESCAPED,
+        [0],
+    ),
+    (
+        "keyword with a wildcard and a backslash",
+        "keywords: ['C:\\Win*\\cmd']\ncondition: keywords",
+        ESCAPED,
+        [0],
+    ),
+    ("keyword with a quote", "keywords: ['\"hello\"']\ncondition: keywords", ESCAPED, [1]),
+    ("keyword with a tab", 'keywords: ["one\\ttwo"]\ncondition: keywords', ESCAPED, [2]),
+    ("keyword with a newline", 'keywords: ["first\\nsecond"]\ncondition: keywords', ESCAPED, [3]),
+    (
+        "keyword with cased and a backslash",
+        "keywords:\n  '|cased': ['C:\\Windows']\ncondition: keywords",
+        ESCAPED,
+        [0],
+    ),
+    (
+        "keyword list longer than one test",
+        "keywords: ["
+        + ", ".join(f"'C:\\nothing{i}'" for i in range(60))
+        + ", 'C:\\Windows']\ncondition: keywords",
+        ESCAPED,
+        [0],
+    ),
     (
         "text that only looks like a number is not one",
         "sel: {Port|lt: 100}\ncondition: sel",
