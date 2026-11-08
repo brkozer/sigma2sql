@@ -6,13 +6,14 @@ value goes through `_text` and the page forbids scripts and outside requests.
 
 from __future__ import annotations
 
-import contextlib
 import html
 import json
 import re
+import unicodedata
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from sigma2sql.hunt import LEVELS, Hit, Report
 from sigma2sql.rule import Correlation
@@ -24,8 +25,17 @@ OPEN_LEVELS = ("critical", "high")
 MAX_OPEN = 20
 # A shell-expanded glob can name hundreds of files, which must not push the summary away.
 MAX_LOGS_SHOWN = 5
-# Characters that change how the text around them is displayed, which logs must not get to do.
-_INVISIBLE = re.compile("[­​-‏ -‮⁠-⁯﻿]")
+# Characters of examples kept in total; past it the rest of the page lists matches only.
+MAX_EXAMPLES_TOTAL = 20_000_000
+# Everything that is not plain text is looked at; what displays as nothing, or changes how the
+# text around it is displayed, is written out, since logs must not get to do either.
+_NOT_PLAIN = re.compile("[^\t\n\x20-\x7e]")
+_HIDDEN_CATEGORIES = ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp")
+_BLANK = frozenset(
+    "\u034f\u115f\u1160\u17b4\u17b5\u180b\u180c\u180d\u180e\u180f\u2800\u3164\uffa0"
+    + "".join(map(chr, range(0xFE00, 0xFE10)))
+    + "".join(map(chr, range(0xE0100, 0xE01F0)))
+)
 
 _CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 
@@ -97,16 +107,51 @@ footer { margin-top: 40px; font-size: 13px; color: var(--muted); }
 
 
 def _text(value: object) -> str:
-    return html.escape(_INVISIBLE.sub(_visible, str(value)), quote=True)
+    return html.escape(_NOT_PLAIN.sub(_visible, str(value)), quote=True)
 
 
 def _visible(match: re.Match[str]) -> str:
-    return f"\\u{ord(match[0]):04x}"
+    char = match[0]
+    if char in _BLANK or unicodedata.category(char) in _HIDDEN_CATEGORIES:
+        return f"\\u{ord(char):04x}"
+    return char
+
+
+class _NotExact(ValueError):
+    """Parsing and printing this event would change what it says."""
+
+
+def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise _NotExact  # the query may have matched the value that would be dropped
+    return dict(pairs)
+
+
+def _exact_int(text: str) -> int:
+    value = int(text)
+    if str(value) != text:
+        raise _NotExact
+    return value
+
+
+def _inexact(_: str) -> Any:
+    raise _NotExact
 
 
 def _pretty(event: str) -> str:
-    with contextlib.suppress(ValueError):
-        event = json.dumps(json.loads(event), indent=2, ensure_ascii=False)
+    if len(event) > MAX_EXAMPLE * 2:  # indenting it first can take gigabytes to keep 20000
+        return f"{event[:MAX_EXAMPLE]}\n... cut at {MAX_EXAMPLE} characters"
+    try:
+        parsed = json.loads(
+            event,
+            object_pairs_hook=_pairs,
+            parse_float=_inexact,
+            parse_int=_exact_int,
+            parse_constant=_inexact,
+        )
+        event = json.dumps(parsed, indent=2, ensure_ascii=False)
+    except (ValueError, RecursionError):
+        pass  # the event as it was written
     if len(event) > MAX_EXAMPLE:
         return f"{event[:MAX_EXAMPLE]}\n... cut at {MAX_EXAMPLE} characters"
     return event
@@ -117,7 +162,7 @@ def _level(hit: Hit) -> str:
 
 
 def _reference(url: str) -> str:
-    if url.startswith(("https://", "http://")):
+    if url[:8].lower().startswith(("https://", "http://")):
         return f'<a href="{_text(url)}" rel="noreferrer noopener">{_text(url)}</a>'
     return _text(url)
 
@@ -127,12 +172,14 @@ def _items(values: Sequence[str], render: type[str] | object = _text) -> str:
     return "<ul>" + "".join(f"<li>{render(v)}</li>" for v in values) + "</ul>"
 
 
-def _hit(hit: Hit, opened: bool) -> str:
+def _hit(hit: Hit, opened: bool, budget: list[int]) -> str:
     rule = hit.rule
     level = _level(hit)
     is_result = isinstance(rule, Correlation) or rule.aggregation is not None
     noun = ("result" if is_result else "event") + ("" if hit.count == 1 else "s")
     rows: list[tuple[str, str]] = []
+    if rule.level and rule.level != level:
+        rows.append(("Level", _text(rule.level)))
     if isinstance(rule, Correlation):
         rows.append(("Correlation", _text(rule.type)))
     if rule.id:
@@ -146,18 +193,24 @@ def _hit(hit: Hit, opened: bool) -> str:
     if rule.references:
         rows.append(("References", _items(rule.references, _reference)))
     meta = "".join(f"<dt>{name}</dt><dd>{value}</dd>" for name, value in rows)
-    examples = ""
-    if hit.examples:
-        shown = f"{len(hit.examples)} of {hit.count:,}"
-        examples = f"<h3>First matches, {shown}</h3>" + "".join(
-            f"<pre>{_text(_pretty(e))}</pre>" for e in hit.examples
-        )
+    examples: list[str] = []
+    for event in hit.examples:
+        block = f"<pre>{_text(_pretty(event))}</pre>"
+        if len(block) > budget[0]:
+            break
+        budget[0] -= len(block)
+        examples.append(block)
+    shown = ""
+    if examples:
+        shown = f"<h3>First matches, {len(examples)} of {hit.count:,}</h3>" + "".join(examples)
+    if len(examples) < len(hit.examples):
+        shown += '<p class="muted">More examples left out: the report reached its size limit.</p>'
     description = f"<p>{_text(rule.description)}</p>" if rule.description else ""
     return (
         f"<details{' open' if opened else ''}><summary>"
         f'<span class="title">{_text(rule.title)}</span>'
         f'<span class="count {level}">{hit.count:,} {noun}</span></summary>'
-        f'<div class="body">{description}<dl>{meta}</dl>{examples}</div></details>'
+        f'<div class="body">{description}<dl>{meta}</dl>{shown}</div></details>'
     )
 
 
@@ -176,6 +229,7 @@ def render(
     groups: dict[str, list[Hit]] = {}
     for hit in report.hits:
         groups.setdefault(_level(hit), []).append(hit)
+    budget = [MAX_EXAMPLES_TOTAL]
     first = {id(h) for h in [h for h in report.hits if _level(h) in OPEN_LEVELS][:MAX_OPEN]}
     links = "".join(
         f'<a class="{level}" href="#level-{level}">{level} {len(hits)}</a>'
@@ -183,11 +237,15 @@ def render(
     )
     sections = "".join(
         f'<h2 id="level-{level}" class="{level}">{level.capitalize()}</h2>'
-        + "".join(_hit(h, id(h) in first) for h in hits)
+        + "".join(_hit(h, id(h) in first, budget) for h in hits)
         for level, hits in groups.items()
     )
     if not report.hits:
-        sections = '<h2>Matches</h2><p class="muted">No rule matched these logs.</p>'
+        verdict = "No rule matched these logs."
+        if not report.ran:
+            couldnt = report.skipped or load_errors
+            verdict = "No rule could run." if couldnt else "No rule applies to these logs."
+        sections = f'<h2>Matches</h2><p class="muted">{verdict}</p>'
     skipped = [(str(i.path or i.title), why) for i, why in report.skipped]
     skipped += [(str(path), why) for path, why in load_errors]
     other = ""
@@ -201,7 +259,8 @@ def render(
         )
         other += (
             f"<h2>Rules skipped</h2><details><summary>"
-            f'<span class="title">{len(skipped):,} rules did not run</span></summary>'
+            f'<span class="title">{len(skipped):,} {"rule" if len(skipped) == 1 else "rules"}'
+            " did not run</span></summary>"
             f'<div class="body"><ul class="plain">{rows}</ul></div></details>'
         )
     log_list = (

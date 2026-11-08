@@ -29,6 +29,9 @@ class Collection:
             except UnicodeDecodeError:
                 col.errors.append((path, "not a UTF-8 file"))
                 continue
+            except (ValueError, RecursionError, OverflowError) as exc:  # e.g. an impossible date
+                col.errors.append((path, f"cannot be read: {exc}"))
+                continue
             for doc in docs:
                 if isinstance(doc, Correlation):
                     col.correlations.append(doc)

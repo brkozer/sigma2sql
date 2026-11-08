@@ -17,7 +17,7 @@ events before they reach production. Correlations become SQL too.
 <div class="grid cards" markdown>
 
 - **[Quick start](quickstart.md)**: install it, then run a first hunt, convert and rule test.
-- **[Hunt through log files](hunt.md)**: log formats, `.evtx`, reports and exit codes.
+- **[Hunt through log files](hunt.md)**: log formats, `.evtx`, HTML reports and exit codes.
 - **[Convert rules](convert.md)**: SQL for your database, your table and your columns.
 - **[Profiles](profiles.md)**: map Sigma fields to your schema and limit rules by log source.
 - **[Test rules](testing.md)**: example events next to each rule, and a GitHub Action.
@@ -28,7 +28,8 @@ events before they reach production. Correlations become SQL too.
 ## Who it is for
 
 - **Incident responders** with a folder of `.evtx` or JSON logs and no SIEM to load them into.
-  `hunt` needs no server. Damaged `.evtx` files are read as far as possible.
+  `hunt` needs no server. Damaged `.evtx` files are read as far as possible. The results
+  can go to [one HTML page](hunt.md#-html) that needs no network and runs no script.
 - **Detection engineers** who want rule tests in CI: `check` runs each rule against its
   example events and can write SARIF for code scanning.
 - **Anyone with logs in a database**: the generated SQL is a normal query you can run, schedule

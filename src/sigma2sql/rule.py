@@ -85,10 +85,10 @@ class Rule:
     path: Path | None = dataclasses.field(default=None, compare=False)
     # Filters that apply to this rule; an event must pass all of them.
     filters: tuple[Filter, ...] = ()
-    description: str | None = None
-    tags: tuple[str, ...] = ()
-    falsepositives: tuple[str, ...] = ()
-    references: tuple[str, ...] = ()
+    description: str | None = dataclasses.field(default=None, compare=False)
+    tags: tuple[str, ...] = dataclasses.field(default=(), compare=False)
+    falsepositives: tuple[str, ...] = dataclasses.field(default=(), compare=False)
+    references: tuple[str, ...] = dataclasses.field(default=(), compare=False)
 
     def compile(self, placeholders: Placeholders | None = None) -> Expr:
         base = _compile(self.searches, self.conditions, placeholders)
@@ -118,10 +118,10 @@ class Correlation:
     generate: bool = False
     name: str | None = None
     path: Path | None = dataclasses.field(default=None, compare=False)
-    description: str | None = None
-    tags: tuple[str, ...] = ()
-    falsepositives: tuple[str, ...] = ()
-    references: tuple[str, ...] = ()
+    description: str | None = dataclasses.field(default=None, compare=False)
+    tags: tuple[str, ...] = dataclasses.field(default=(), compare=False)
+    falsepositives: tuple[str, ...] = dataclasses.field(default=(), compare=False)
+    references: tuple[str, ...] = dataclasses.field(default=(), compare=False)
 
 
 Document = Rule | Correlation
@@ -195,15 +195,17 @@ def _meta(doc: dict[str, Any], path: Path | None) -> dict[str, Any]:
 
 
 def _about(doc: dict[str, Any]) -> dict[str, Any]:
-    """What a report shows about a rule; none of it changes what the rule matches."""
+    """What a report shows about a rule; none of it changes what the rule matches, so only
+    plain text is taken and a value of another shape is ignored."""
 
     def texts(key: str) -> tuple[str, ...]:
         value = doc.get(key)
-        return tuple(str(v) for v in value) if isinstance(value, list) else ()
+        items = value if isinstance(value, list) else [value]
+        return tuple(v for v in items if isinstance(v, str))
 
     description = doc.get("description")
     return {
-        "description": str(description).strip() if description is not None else None,
+        "description": description.strip() if isinstance(description, str) else None,
         "tags": texts("tags"),
         "falsepositives": texts("falsepositives"),
         "references": texts("references"),

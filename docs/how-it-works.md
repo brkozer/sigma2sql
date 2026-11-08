@@ -77,6 +77,7 @@ All code is in `src/sigma2sql/`.
 | `runner.py` | In-memory SQLite for `test` and `check`, with `regexp`, `cidr_match` and `sigma_percentile`. |
 | `hunt.py` | In-memory DuckDB for `hunt`: reads logs, handles damaged EVTX files, runs each rule and ranks the hits. |
 | `sarif.py` | SARIF 2.1.0 reports. |
+| `html_report.py` | The `hunt --html` page. |
 | `cli.py` | Argument parsing, the order of defaults, profile and options, output and exit codes. |
 | `errors.py` | `RuleError` and `UnsupportedRule`. |
 

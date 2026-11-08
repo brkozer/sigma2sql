@@ -61,8 +61,10 @@ medium           1  Successful RDP logon from a public address  (examples/rules/
 `--examples N` prints matching events (or correlation results such as
 `{"TargetUserName":"admin","window_start":"2026-11-01 03:12:01","window_end":"2026-11-01 03:12:17","value":3}`),
 `--format json` gives a machine-readable report, `--sarif FILE` also writes a SARIF report
-for code scanning, and `--fail-on high` a non-zero exit code when a rule at that level or
-above fires.
+for code scanning, `--html FILE` also writes one HTML page to read in a browser, and
+`--fail-on high` a non-zero exit code when a rule at that level or above fires. The HTML
+page needs no network and runs no script. It shows up to five examples per rule unless
+`-e` is given, and the first 20 critical or high matches start open.
 
 `.evtx` files use the `evtx` profile unless you pass another one. The Windows profiles only
 run rules for `product: windows`, so a directory of all SigmaHQ rules can be used as it is;
@@ -226,7 +228,7 @@ files exits with code 2, also next to a good path.
 The same check as a GitHub Action:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.3.3
+- uses: brkozer/sigma2sql@v0.4.0
   with:
     path: rules
     profile: sysmon          # optional

@@ -87,7 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Rules contain non-ASCII (e.g. windash variants); don't depend on the console code page.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     if args.command == "profiles":
         for name, description in builtin_profiles().items():
             print(f"{name:<16}{description}")
@@ -395,14 +395,15 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
     )
     if report_.other_logs:
         print(f"{report_.other_logs} rules are for other log sources", file=sys.stderr)
-    if args.sarif and not _write_sarif(args.sarif, [_hit_finding(h) for h in report_.hits]):
-        return 2
+    # Both are attempted: a long hunt must not be lost to one bad path.
+    written = not args.sarif or _write_sarif(args.sarif, [_hit_finding(h) for h in report_.hits])
     if args.html:
         page = html_report.render(
             report_, col.errors, args.logs, version("sigma2sql"), datetime.now(UTC)
         )
-        if not _write(args.html, page):
-            return 2
+        written = _write(args.html, page) and written
+    if not written:
+        return 2
     if not report_.ran and (report_.skipped or col.errors):
         print("sigma2sql: no rule could run", file=sys.stderr)
         return 2
@@ -431,6 +432,16 @@ def _print_table(report: Report, examples: int) -> None:
             print(f"{'':<14}{'':>{width}}    {event}")
 
 
+def _example(event: str) -> object:
+    try:
+        value = json.loads(event)
+        # Nested as deep as the report will put it, which is what has to be printable.
+        json.dumps([[[value]]], indent=2)
+    except RecursionError:  # logs can nest deeper than Python will follow
+        return event
+    return value
+
+
 def _hit_json(h: Hit, examples: int) -> dict[str, object]:
     return {
         "title": h.rule.title,
@@ -439,7 +450,7 @@ def _hit_json(h: Hit, examples: int) -> dict[str, object]:
         "path": str(h.rule.path) if h.rule.path else None,
         "correlation": isinstance(h.rule, Correlation) or h.rule.aggregation is not None,
         "count": h.count,
-        "examples": [json.loads(e) for e in h.examples[:examples]],
+        "examples": [_example(e) for e in h.examples[:examples]],
     }
 
 

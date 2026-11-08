@@ -1,6 +1,6 @@
 [project]
 name = "sigma2sql"
-version = "0.3.3"
+version = "0.4.0"
 description = "Sigma rules as SQL for SQLite, PostgreSQL, DuckDB and ClickHouse: convert, hunt through log files and test rules"
 readme = "README.md"
 license = "MIT"

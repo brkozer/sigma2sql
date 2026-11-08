@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 (2026-11-09)
+
+- `hunt --html FILE` writes a report as one HTML file: matches by level, the rule's description,
+  tags, false positives and references, and up to five events for each. It needs no network and
+  runs no script, and everything from rules and logs is escaped.
+- A rule file with a value that cannot be read, such as an impossible date, is now skipped with
+  a message instead of ending the run.
+- Non-UTF-8 text in a rule title or file name no longer ends the run when it is printed.
+
 ## 0.3.3 (2026-11-08)
 
 - Fix: in JSON mode, keywords with a backslash, a quote, a tab or a newline never matched,

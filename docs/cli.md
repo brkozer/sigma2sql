@@ -21,7 +21,7 @@ options:
   -h, --help            show this help message and exit
   --version             show program's version number and exit
 $ sigma2sql --version
-sigma2sql 0.3.3
+sigma2sql 0.4.0
 ```
 
 Results go to stdout. Skipped rules, warnings and summary lines go to stderr, so a command can
@@ -203,7 +203,7 @@ through log files](hunt.md) for a walk-through.
 
 ```text
 usage: sigma2sql hunt [-h] -l LOGS [LOGS ...] [-e EXAMPLES] [--format {table,json}]
-                      [--sarif SARIF]
+                      [--sarif SARIF] [--html HTML]
                       [--fail-on {critical,high,medium,low,informational}] [-p PROFILE]
                       [-m MAPPING] [--placeholders PLACEHOLDERS] [--nested]
                       [--timestamp-field TIMESTAMP_FIELD]
@@ -215,9 +215,10 @@ usage: sigma2sql hunt [-h] -l LOGS [LOGS ...] [-e EXAMPLES] [--format {table,jso
 | --- | --- | --- |
 | `rules` | required | rule files or directories, one or more, filter files included |
 | `-l, --logs` | required | log files, one or more; globs such as `'logs/*.json'` |
-| `-e, --examples N` | `0` | show up to N matching events or correlation results per rule; a negative N is an error |
+| `-e, --examples N` | `0` | show up to N matching events or correlation results per rule; a negative N is an error; without it, `--html` still puts up to five on the page |
 | `--format` | `table` | `table` or `json` |
 | `--sarif FILE` | none | also write the matches to this SARIF file |
+| `--html FILE` | none | also write a report to this HTML file, see [`--html`](hunt.md#-html) |
 | `--fail-on LEVEL` | none | exit 1 if a rule at this level or above matches: `critical`, `high`, `medium`, `low` or `informational` |
 
 The [shared options](#options-shared-by-the-rule-commands) apply too. `--logs` takes any number
@@ -322,6 +323,13 @@ $ sigma2sql hunt examples/rules --logs examples/events.jsonl --fail-on high > /d
 `--sarif FILE` writes a SARIF 2.1.0 report with one result per matching rule. See
 [`--sarif`](hunt.md#-sarif) for its rule ids and levels. A file that cannot be written gives
 exit code 2.
+
+### HTML report
+
+`--html FILE` writes one page with the matches, their rule details and examples, the
+warnings and the skipped rules. The page needs no network and runs no script. It shows up to
+five examples per rule unless `-e` is given, and the first 20 critical or high matches start
+open. See [`--html`](hunt.md#-html). A file that cannot be written gives exit code 2.
 
 ## check
 
@@ -431,7 +439,7 @@ sysmon          Sysmon events with their original field names; each Sigma catego
 | --- | --- | --- | --- | --- |
 | 0 | every rule converted | ran; with `--expect`, the expectation held | ran; nothing reached `--fail-on` | every rule loaded and every tested rule passed |
 | 1 | a rule or file was skipped | `--expect` did not hold | a rule reached `--fail-on`, or the `duckdb` or `evtx` package is missing | a rule failed, could not be loaded or converted, or has no tests with `--require-tests` |
-| 2 | no rules found, also when the paths hold only filters | no rules found, the rule or events could not be read, converted or run, or a regular expression is invalid | no rules found, no rule could run, a log could not be read, damaged `.evtx` files gave no event at all, or the `--sarif` file could not be written | no rules found, or the `--sarif` file could not be written |
+| 2 | no rules found, also when the paths hold only filters | no rules found, the rule or events could not be read, converted or run, or a regular expression is invalid | no rules found, no rule could run, a log could not be read, damaged `.evtx` files gave no event at all, or the `--sarif` or `--html` file could not be written | no rules found, or the `--sarif` file could not be written |
 
 For all four commands, code 2 also covers bad usage and a profile, mapping or placeholders file
 that cannot be loaded. For `test`, `hunt` and `check`, "no rules found" means a rule path that

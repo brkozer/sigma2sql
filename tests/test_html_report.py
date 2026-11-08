@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -126,3 +127,125 @@ def test_only_the_first_serious_matches_start_open() -> None:
     report = Report(1, hits, 30, [])  # type: ignore[arg-type]
     text = html_report.render(report, [], ["x"], "1", WHEN)
     assert text.count("<details open>") == html_report.MAX_OPEN
+
+
+@pytest.mark.parametrize("depth", [1500, 100000])
+def test_deeply_nested_event_keeps_the_report(depth: int) -> None:
+    event = '{"A": ' + "[" * depth + "1" + "]" * depth + "}"
+    report = Report(1, [Hit(rule(), 1, [event])], 1, [])  # type: ignore[arg-type]
+    assert "<pre>" in html_report.render(report, [], ["x"], "1", WHEN)
+
+
+@pytest.mark.parametrize(
+    ("event", "kept"),
+    [
+        ('{"C": "mimikatz", "C": "notepad"}', "mimikatz"),
+        ('{"n": 123456789012345678901234567890.123456789}', "123456789012345678901234567890.123"),
+        ('{"f": 1e999}', "1e999"),
+    ],
+)
+def test_an_event_is_never_changed_by_printing_it(event: str, kept: str) -> None:
+    report = Report(1, [Hit(rule(), 1, [event])], 1, [])  # type: ignore[arg-type]
+    assert kept in html_report.render(report, [], ["x"], "1", WHEN)
+
+
+@pytest.mark.parametrize("char", ["\u061c", "\U000e0041", "\u3164", "\x1b", "\ufe0f"])
+def test_more_invisible_characters_are_shown(char: str) -> None:
+    item = replace(rule(), title=f"a{char}b")  # type: ignore[type-var]
+    text = html_report.render(Report(1, [Hit(item, 1)], 1, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    assert f"a{char}b" not in text and f"\\u{ord(char):04x}" in text
+
+
+def test_ordinary_letters_stay() -> None:
+    assert "şifre Système" in html_report._text("şifre Système")
+
+
+def test_page_stays_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(html_report, "MAX_EXAMPLES_TOTAL", 1000)
+    event = json.dumps({"A": "x" * 900})
+    hits = [Hit(rule(), 1, [event]) for _ in range(5)]
+    text = html_report.render(Report(1, hits, 5, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    assert text.count("More examples left out") == 4
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"description": ["a"], "tags": "x", "falsepositives": [None, 5, {"a": 1}]},
+        {"references": {"a": 1}, "description": 12},
+    ],
+)
+def test_metadata_of_any_shape_does_not_stop_a_rule(fields: dict[str, object]) -> None:
+    assert rule(**fields) == rule()
+
+
+def test_scalar_tags_are_kept() -> None:
+    assert rule(tags="attack.t1059").tags == ("attack.t1059",)  # type: ignore[attr-defined]
+
+
+def test_no_rule_could_run_is_not_reported_as_no_match(tmp_path: Path) -> None:
+    bad = tmp_path / "a.yml"
+    bad.write_text("title: [unclosed")
+    out = tmp_path / "r.html"
+    assert main(["hunt", str(bad), "--logs", EVENTS, "--html", str(out)]) == 2
+    text = out.read_text(encoding="utf-8")
+    assert "No rule could run" in text and "1 rule did not run" in text
+
+
+def test_a_bad_sarif_path_does_not_lose_the_report(tmp_path: Path) -> None:
+    out = tmp_path / "r.html"
+    sarif = tmp_path / "no" / "x.sarif"
+    args = ["--logs", EVENTS, "--html", str(out), "--sarif", str(sarif)]
+    assert main(["hunt", RULES, *args]) == 2
+    assert out.exists()
+
+
+def test_upper_case_scheme_is_a_link() -> None:
+    item = rule(references=["HTTPS://EXAMPLE.ORG/A"])
+    text = html_report.render(Report(1, [Hit(item, 1)], 1, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    assert 'href="HTTPS://EXAMPLE.ORG/A"' in text
+
+
+def test_a_big_event_is_not_indented_before_it_is_cut() -> None:
+    event = json.dumps({"A": list(range(100000))})
+    text = html_report._pretty(event)
+    assert text.endswith("cut at 20000 characters") and "\n  " not in text
+
+
+def test_one_big_match_does_not_use_up_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(html_report, "MAX_EXAMPLES_TOTAL", 1000)
+    big = Hit(rule(), 2, [json.dumps({"A": "x" * 5000}), json.dumps({"A": "y"})])
+    small = Hit(rule(), 1, [json.dumps({"B": "small"})])
+    text = html_report.render(Report(1, [big, small], 2, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    assert "small" in text
+
+
+def test_negative_zero_stays_as_written() -> None:
+    assert '"z":-0' in html_report._pretty('{"z":-0}').replace(" ", "")
+
+
+def test_no_rule_applies_is_not_called_a_failure() -> None:
+    report = Report(1, [], 0, [], 3)
+    assert "No rule applies" in html_report.render(report, [], ["x"], "1", WHEN)
+
+
+def test_deep_event_in_json_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rules = tmp_path / "r.yml"
+    rules.write_text("title: t\ndetection: {s: {A: x}, condition: s}\n")
+    logs = tmp_path / "e.jsonl"
+    logs.write_text('{"A": "x", "D": ' + "[" * 1500 + "1" + "]" * 1500 + "}\n")
+    assert main(["hunt", str(rules), "--logs", str(logs), "--format", "json", "-e", "1"]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["count"] == 1
+
+
+def test_a_huge_number_skips_only_that_rule(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "good.yml").write_text("title: g\ndetection: {s: {EventID: 4624}, condition: s}\n")
+    (tmp_path / "bad.yml").write_text(
+        "title: b\ncorrelation: {type: event_count, rules: [x], condition: {gte: "
+        + "9" * 400
+        + "}}\n"
+    )
+    assert main(["hunt", str(tmp_path), "--logs", EVENTS]) == 0
+    assert "bad.yml" in capsys.readouterr().err

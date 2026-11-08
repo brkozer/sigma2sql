@@ -221,6 +221,55 @@ matched, with an empty result list.
 | `informational` | `note` | 1.0 |
 | none or other | `warning` | 5.5 |
 
+### `--html`
+
+`--html FILE` also writes the report as one HTML page to open in a browser, whatever `--format`
+says. What the terminal shows does not change.
+
+```console
+$ sigma2sql hunt examples/rules --logs examples/events.jsonl --html hits.html
+LEVEL         HITS  RULE
+high             2  PowerShell started with an encoded command  (examples/rules/encoded_powershell.yml)
+high             1  Brute force against one account  (examples/rules/brute_force.yml)
+high             1  Office application starting a shell  (examples/rules/office_spawns_shell.yml)
+medium           1  Successful RDP logon from a public address  (examples/rules/rdp_from_outside.yml)
+4 of 4 rules matched 12 events (0 rules skipped)
+$ grep -c '<script' hits.html
+0
+$ grep -o '<details open' hits.html | wc -l
+3
+```
+
+The page holds:
+
+- the time it was written and the log paths, folded if there are more than five
+- the number of events read, rules run, rules matched, rules skipped and rules for other log
+  sources
+- the rules that matched, grouped by level, most severe first, each with its title, number of
+  matches, description, rule id, file, tags, false positives, references and examples
+- the warnings of the run, and the rules that were skipped with the reason for each
+
+It shows up to five examples per rule, even when the terminal shows none. `-e N` sets the number
+for the page and the terminal together, and `-e 0` counts as not giving the option. An example
+longer than 20000 characters is cut, so a field after that point is not on the page. Events are
+indented for reading, unless that would change them: one with a repeated key or a decimal number
+is shown exactly as it was written. Examples stop at 20 million characters in total, which the
+page says, and the most severe matches come first.
+
+The first 20 rules that matched at level `critical` or `high` start open and the others start
+closed. That is why the run above has three open and one closed.
+
+Rules and logs can be written by an attacker, so the page needs no network and runs no script.
+It is a single file with its style inside. It holds no script, and its Content Security Policy
+forbids scripts and any request for something outside the file. Every value from a rule or a log
+is escaped, and characters that change how the text around them is displayed, such as a
+right-to-left override, appear as an escape like `‮`. Only `http` and `https` references
+become links, and nothing is fetched unless you click one.
+
+The parent directory must exist. If the file cannot be written, the report is still printed and
+the run ends with code 2, whatever `--fail-on` says. The file is written even if nothing
+matched, and then says so.
+
 ### `--fail-on`
 
 Without `--fail-on`, matches do not change the exit code. `--fail-on LEVEL` exits with code 1 if
@@ -455,6 +504,6 @@ sigma2sql: empty: no .yml or .yaml files found
 | --- | --- |
 | 0 | The hunt finished. This includes runs with no match, with warnings and, if a rule ran, with skipped rules. |
 | 1 | A rule at or above `--fail-on` matched. Also when the `duckdb` or `evtx` extra is missing. |
-| 2 | The hunt could not run: bad arguments, an unknown profile, an unreadable mapping or placeholder file, a rule path that does not exist or holds no rule files, also next to a good path, no rule that could run, an unsupported file type, a missing or unreadable log file, malformed JSON, a CSV file DuckDB cannot read, a hunt that read no event and gave a warning, or a `--sarif` file that cannot be written. |
+| 2 | The hunt could not run: bad arguments, an unknown profile, an unreadable mapping or placeholder file, a rule path that does not exist or holds no rule files, also next to a good path, no rule that could run, an unsupported file type, a missing or unreadable log file, malformed JSON, a CSV file DuckDB cannot read, a hunt that read no event and gave a warning, or a `--sarif` or `--html` file that cannot be written. |
 
 All options are listed under [Command line](cli.md).

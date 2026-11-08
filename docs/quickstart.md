@@ -25,7 +25,7 @@ Check the install:
 
 ```console
 $ sigma2sql --version
-sigma2sql 0.3.3
+sigma2sql 0.4.0
 ```
 
 The example rules and events are in the repository, not in the package:
