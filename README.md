@@ -226,7 +226,7 @@ files exits with code 2, also next to a good path.
 The same check as a GitHub Action:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.3.2
+- uses: brkozer/sigma2sql@v0.3.3
   with:
     path: rules
     profile: sysmon          # optional

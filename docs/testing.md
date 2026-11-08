@@ -241,7 +241,7 @@ the same ref and fails the step when `check` fails.
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: brkozer/sigma2sql@v0.3.2
+- uses: brkozer/sigma2sql@v0.3.3
   with:
     path: rules
     profile: sysmon
@@ -259,7 +259,7 @@ the same ref and fails the step when `check` fails.
 Several paths can go on one line or on a line each:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.3.2
+- uses: brkozer/sigma2sql@v0.3.3
   with:
     path: |
       rules/windows
@@ -318,7 +318,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: brkozer/sigma2sql@v0.3.2
+      - uses: brkozer/sigma2sql@v0.3.3
         with:
           path: rules
           profile: sysmon

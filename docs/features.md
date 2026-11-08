@@ -96,17 +96,40 @@ Keywords need something to search. With `--keyword-column` that is the column yo
 mode it is the whole document, and `hunt`, `test` and `check` are always in JSON mode. Otherwise
 the rule is reported as unsupported.
 
-In JSON mode a keyword searches the document's JSON text, not its values, which has three
+In JSON mode a keyword searches the document's JSON text, not its values, which has these
 effects:
 
 - Key names match too. The keyword `Image` matches any event with an `Image` field.
-- Backslashes and double quotes are escaped in JSON. On the event
-  `{"Image": "C:\\Windows\\cmd.exe"}` the keyword `C:\Windows\cmd.exe` finds nothing, and
-  `C:\\\\Windows\\\\cmd.exe`, which is the text as stored, matches.
+- A keyword is written the way JSON writes it before it is searched, so a backslash, double
+  quote, tab or newline in a keyword finds that character in a value. On the event
+  `{"Image": "C:\\Windows\\cmd.exe"}` the keyword `C:\Windows\cmd.exe` matches.
+- A double quote in a keyword is a quote inside a value. The quotes around a key are JSON
+  syntax, so the keyword `"Image"` does not match the key `Image`.
+- The search is still on text, which has two limits. The `?` wildcard stands for one character
+  of that text, so `C:?Windows` does not match `C:\Windows`, where the backslash is stored as
+  two. A keyword that starts with a tab or newline can match inside an escaped backslash, so a
+  newline followed by `foo` also finds the value `C:\nfoo`, a backslash and an `n`.
+- Regular expression keywords (`|re`) are not rewritten and see the JSON text. To match the
+  path above, a regular expression needs two backslashes in the text, `C:\\\\Windows`.
 - `hunt` keeps the text of a JSON file as it is, so a character written there as `\uXXXX` stays
   an escape, and the keyword `şifre` does not match it. `test`, `check` and `hunt` on `.evtx`
   files store the characters themselves, so it matches there. A search on a field is not
   affected.
+
+A rule that doubled its backslashes as a workaround must be changed back. The keyword
+`C:\\\\Windows\\\\cmd.exe` now looks for two backslashes in a row in the value. Here `path.yml`
+has the keyword `C:\Windows\cmd.exe` and `doubled.yml` has the doubled form:
+
+```console
+$ cat event.jsonl
+{"Image": "C:\\Windows\\cmd.exe"}
+$ sigma2sql hunt path.yml --logs event.jsonl
+1 of 1 rules matched 1 events (0 rules skipped)
+LEVEL         HITS  RULE
+high             1  Path keyword  (path.yml)
+$ sigma2sql hunt doubled.yml --logs event.jsonl
+0 of 1 rules matched 1 events (0 rules skipped)
+```
 
 ## Case sensitivity
 

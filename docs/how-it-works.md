@@ -130,9 +130,29 @@ Sigma matches without regard to case unless `cased` is set. For `Image: cmd.exe`
 A keyword search has no field. It runs on `--keyword-column` if given, otherwise on the JSON
 document as text: `"data"` on SQLite and `CAST("data" AS TEXT)` elsewhere.
 
-That text is the stored JSON, so keywords see its escaping. In the document, the path
-`C:\Windows` is stored as `C:\\Windows`, and the keyword `C:\Windows` does not match it. The
-same applies to keys: a keyword can match a field name as well as a value.
+That text is the stored JSON, where the path `C:\Windows` is stored as `C:\\Windows`. So in
+JSON mode each literal part of a keyword goes through `json.dumps` with `ensure_ascii=False`
+before the `LIKE` pattern is built. Backslashes, double quotes, tabs and newlines become their
+JSON escapes, and wildcards stay wildcards. A plain column holds no JSON, so the keyword is
+left alone there:
+
+```console
+$ sigma2sql convert path.yml --json-column data
+-- Path keyword
+SELECT * FROM "events" WHERE "data" LIKE '%C:\\\\Windows\\\\cmd.exe%' ESCAPE '\';
+
+$ sigma2sql convert path.yml --keyword-column message
+-- Path keyword
+SELECT * FROM "events" WHERE "message" LIKE '%C:\\Windows\\cmd.exe%' ESCAPE '\';
+```
+
+The pattern has four backslashes because `json.dumps` doubles the one in the keyword and `LIKE`
+escaping doubles both of those. A rule that doubled its backslashes as a workaround must be
+changed back, as it now looks for two backslashes in a row in the value.
+
+Keywords still search the text, not the values, so a keyword can match a field name as well as
+a value. Regular expression keywords (`|re`) are not rewritten and see the JSON text with its
+escaping.
 
 `test`, `check` and `hunt` on `.evtx` files write each event with Python's `json.dumps` and
 `ensure_ascii=False`, so non-ASCII characters stay as they are and a keyword such as `café`

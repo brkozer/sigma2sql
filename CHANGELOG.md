@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3 (2026-11-08)
+
+- Fix: in JSON mode, keywords with a backslash, a quote, a tab or a newline never matched,
+  because the document's text holds them escaped. `C:\Windows` now finds that path on all four
+  databases. A rule that doubled the backslashes to work around this has to be changed back.
+
 ## 0.3.2 (2026-11-07)
 
 - `temporal_ordered` correlations, on all four databases. A row for every start time of a
