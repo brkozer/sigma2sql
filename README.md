@@ -66,6 +66,8 @@ for code scanning, `--html FILE` also writes one HTML page to read in a browser,
 page needs no network and runs no script. It shows up to five examples per rule unless
 `-e` is given.
 
+<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/report.png" alt="sigma2sql HTML report with rule counts by level and ATT&CK tactic, a table of matching rules and one rule opened to show its events" width="100%"></p>
+
 `.evtx` files use the `evtx` profile unless you pass another one. The Windows profiles only
 run rules for `product: windows`, so a directory of all SigmaHQ rules can be used as it is;
 the rest are counted on stderr. Logs from an incident are

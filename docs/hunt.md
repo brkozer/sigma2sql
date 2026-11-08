@@ -238,6 +238,8 @@ $ grep -c '<script' hits.html
 0
 ```
 
+![sigma2sql HTML report with rule counts by level and ATT&CK tactic, a table of matching rules and one rule opened to show its events](report.png)
+
 The page holds:
 
 - the time it was written and the log paths, folded if there are more than five
