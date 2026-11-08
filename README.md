@@ -64,7 +64,7 @@ medium           1  Successful RDP logon from a public address  (examples/rules/
 for code scanning, `--html FILE` also writes one HTML page to read in a browser, and
 `--fail-on high` a non-zero exit code when a rule at that level or above fires. The HTML
 page needs no network and runs no script. It shows up to five examples per rule unless
-`-e` is given, and the first 20 critical or high matches start open.
+`-e` is given.
 
 `.evtx` files use the `evtx` profile unless you pass another one. The Windows profiles only
 run rules for `product: windows`, so a directory of all SigmaHQ rules can be used as it is;

@@ -236,15 +236,16 @@ medium           1  Successful RDP logon from a public address  (examples/rules/
 4 of 4 rules matched 12 events (0 rules skipped)
 $ grep -c '<script' hits.html
 0
-$ grep -o '<details open' hits.html | wc -l
-3
 ```
 
 The page holds:
 
 - the time it was written and the log paths, folded if there are more than five
-- the number of events read, rules run, rules matched, rules skipped and rules for other log
+- the number of events read and of rules run, matched, skipped and left out for other log
   sources
+- one row per matching rule, most severe first, with its level, hits, title and ATT&CK technique
+- how many matching rules there are at each level and for each ATT&CK tactic, in the order of
+  an intrusion. Pick a level, a tactic or both to show only those rows. This needs no script
 - the rules that matched, grouped by level, most severe first, each with its title, number of
   matches, description, rule id, file, tags, false positives, references and examples
 - the warnings of the run, and the rules that were skipped with the reason for each
@@ -256,8 +257,7 @@ indented for reading, unless that would change them: one with a repeated key or 
 is shown exactly as it was written. Examples stop at 20 million characters in total, which the
 page says, and the most severe matches come first.
 
-The first 20 rules that matched at level `critical` or `high` start open and the others start
-closed. That is why the run above has three open and one closed.
+Every row starts closed. Open one to read the rule and its events.
 
 Rules and logs can be written by an attacker, so the page needs no network and runs no script.
 It is a single file with its style inside. It holds no script, and its Content Security Policy

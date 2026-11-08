@@ -328,8 +328,7 @@ exit code 2.
 
 `--html FILE` writes one page with the matches, their rule details and examples, the
 warnings and the skipped rules. The page needs no network and runs no script. It shows up to
-five examples per rule unless `-e` is given, and the first 20 critical or high matches start
-open. See [`--html`](hunt.md#-html). A file that cannot be written gives exit code 2.
+five examples per rule unless `-e` is given. See [`--html`](hunt.md#-html). A file that cannot be written gives exit code 2.
 
 ## check
 

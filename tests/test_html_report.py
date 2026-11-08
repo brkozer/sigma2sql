@@ -37,7 +37,7 @@ def test_report_lists_the_matches(tmp_path: Path) -> None:
     text = page(tmp_path)
     assert "Office application starting a shell" in text
     assert "Brute force against one account" in text
-    assert '<a class="high" href="#level-high">high 3</a>' in text
+    assert '<label for="f-high" class="high"><b>3</b>High</label>' in text
     assert text.count("<details") == 4
 
 
@@ -120,13 +120,6 @@ def test_a_long_list_of_logs_is_folded() -> None:
     assert "50 log paths" in text
     assert "log49.evtx" in text
     assert "log paths" not in html_report.render(report, [], ["a.evtx"], "1", WHEN)
-
-
-def test_only_the_first_serious_matches_start_open() -> None:
-    hits = [Hit(rule(level="high"), 1) for _ in range(30)]
-    report = Report(1, hits, 30, [])  # type: ignore[arg-type]
-    text = html_report.render(report, [], ["x"], "1", WHEN)
-    assert text.count("<details open>") == html_report.MAX_OPEN
 
 
 @pytest.mark.parametrize("depth", [1500, 100000])
@@ -249,3 +242,70 @@ def test_a_huge_number_skips_only_that_rule(
     )
     assert main(["hunt", str(tmp_path), "--logs", EVENTS]) == 0
     assert "bad.yml" in capsys.readouterr().err
+
+
+def test_only_levels_that_matched_can_be_picked() -> None:
+    hits = [Hit(rule(level="critical"), 1), Hit(rule(), 1)]
+    report = Report(1, hits, 2, [])  # type: ignore[arg-type]
+    text = html_report.render(report, [], ["x"], "1", WHEN)
+    assert re.findall(r'type="radio" name="level" id="f-(\w+)"', text) == [
+        "all",
+        "critical",
+        "unset",
+    ]
+
+
+def test_every_level_can_be_filtered_by_css() -> None:
+    for level in [*html_report.LEVELS, "unset"]:
+        assert f"#f-{level}:checked ~ .list .rule:not(.{level})" in html_report._STYLE
+
+
+def test_techniques_come_from_attack_tags_only() -> None:
+    tags = ["attack.execution", "attack.t1059.001", "cve.2021.1", "attack.T1003", "attack.t1"]
+    assert html_report._techniques(tags) == "T1059.001 T1003"
+
+
+def test_rows_start_closed(tmp_path: Path) -> None:
+    assert "<details open" not in page(tmp_path)
+
+
+def test_a_hostile_title_is_escaped_in_the_row() -> None:
+    text = html_report.render(Report(1, [Hit(rule(), 1)], 1, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    assert '<span class="name">&lt;img src=x' in text
+
+
+def test_tactics_are_counted_in_attack_order() -> None:
+    hits = [
+        Hit(rule(tags=["attack.impact", "attack.execution"]), 1),
+        Hit(rule(tags=["attack.execution", "attack.t1059"]), 1),
+    ]
+    text = html_report.render(Report(1, hits, 2, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    assert text.index('for="t-execution"') < text.index('for="t-impact"')
+    assert re.search(r'for="t-execution" style="--x:75%"><b>2</b>', text)
+    assert '<span class="none"><b>0</b>Discovery</span>' in text
+    assert "tc-impact" in text
+
+
+def test_a_hostile_tag_never_becomes_a_class() -> None:
+    hits = [Hit(rule(tags=['attack.x" onclick="a', "attack.execution"]), 1)]
+    text = html_report.render(Report(1, hits, 1, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    assert 'class="rule unset tc-execution"' in text
+
+
+def test_every_tactic_can_be_filtered_by_css() -> None:
+    for tactic in html_report.TACTICS:
+        assert f"#t-{tactic}:checked ~ .list .rule:not(.tc-{tactic})" in html_report._STYLE
+
+
+def test_no_tactic_strip_without_tactics() -> None:
+    text = html_report.render(Report(1, [Hit(rule(), 1)], 1, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    assert 'class="strip"' not in text
+
+
+def test_the_retired_tactic_shows_only_when_used() -> None:
+    used = Hit(rule(tags=["attack.defense-evasion"]), 1)
+    other = Hit(rule(tags=["attack.stealth", "attack.defense-impairment"]), 1)
+    with_it = html_report.render(Report(1, [used], 1, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    without = html_report.render(Report(1, [other], 1, []), [], ["x"], "1", WHEN)  # type: ignore[arg-type]
+    assert "Defense evasion" in with_it and "Defense evasion" not in without
+    assert 'for="t-stealth"' in without and 'for="t-defense-impairment"' in without

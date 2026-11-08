@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 import unicodedata
 from collections.abc import Sequence
@@ -20,11 +21,37 @@ from sigma2sql.rule import Correlation
 
 # Longest example shown, in characters; a few events can hold megabytes of script block text.
 MAX_EXAMPLE = 20000
-OPEN_LEVELS = ("critical", "high")
-# The most serious matches start open, but not so many that the page is one long scroll.
-MAX_OPEN = 20
 # A shell-expanded glob can name hundreds of files, which must not push the summary away.
 MAX_LOGS_SHOWN = 5
+_SHORT = {
+    "critical": "crit",
+    "high": "high",
+    "medium": "med",
+    "low": "low",
+    "informational": "info",
+    "unset": "none",
+}
+_NAME = {**{level: level.capitalize() for level in LEVELS}, "unset": "No level"}
+# In the order an intrusion goes through them.
+TACTICS = (
+    "reconnaissance",
+    "resource-development",
+    "initial-access",
+    "execution",
+    "persistence",
+    "privilege-escalation",
+    "stealth",
+    "defense-impairment",
+    "defense-evasion",  # split into the two above by ATT&CK; older rules still use it
+    "credential-access",
+    "discovery",
+    "lateral-movement",
+    "collection",
+    "command-and-control",
+    "exfiltration",
+    "impact",
+)
+_TECHNIQUE = re.compile(r"attack\.t\d{4}(\.\d{3})?")
 # Characters of examples kept in total; past it the rest of the page lists matches only.
 MAX_EXAMPLES_TOTAL = 20_000_000
 # Everything that is not plain text is looked at; what displays as nothing, or changes how the
@@ -39,71 +66,146 @@ _BLANK = frozenset(
 
 _CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 
-_STYLE = """
+_RING = "box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ink);"
+_FILTER_STYLE = "".join(
+    f"#f-{name}:checked ~ .panel label[for=f-{name}] {{ {_RING} }}\n"
+    + (
+        f"#f-{name}:checked ~ .list .rule:not(.{name}) {{ display: none; }}\n"
+        if name != "all"
+        else ""
+    )
+    for name in ("all", *LEVELS, "unset")
+) + "".join(
+    f"#t-{name}:checked ~ .panel label[for=t-{name}] {{ outline: 2px solid var(--ink);"
+    " outline-offset: -2px; }\n"
+    + (
+        f"#t-{name}:checked ~ .list .rule:not(.tc-{name}) {{ display: none; }}\n"
+        if name != "all"
+        else ""
+    )
+    for name in ("all", *TACTICS)
+)
+
+_STYLE = (
+    """
 :root {
   color-scheme: light dark;
-  --bg: #f6f7f9; --panel: #fff; --text: #1c2128; --muted: #5b6673; --line: #dfe3e8;
-  --code: #f0f2f5; --critical: #a4133c; --high: #c2410c; --medium: #a16207; --low: #1d4ed8;
-  --informational: #4b5563; --unset: #6b7280;
+  --bg: #f1f3f6; --row: #fff; --open: #e9edf2; --line: #dce1e8; --ink: #1d2733; --soft: #647284;
+  --code: #e4e9ef; --on: #141a22; --heat: #3f7bf0;
+  --critical: #ff5c86; --high: #ff9a3d; --medium: #ffd23f; --low: #6cc4ff;
+  --informational: #b8c4d2; --unset: #b8c4d2;
+  --ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto,
+    "Noto Sans", Ubuntu, sans-serif;
+  --mono: "Cascadia Mono", "SF Mono", ui-monospace, Consolas, "DejaVu Sans Mono", monospace;
+  --cols: 4.6rem 5.4rem minmax(0, 1fr) 9.5rem;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1318; --panel: #171c23; --text: #e4e8ed; --muted: #98a4b3; --line: #2b333d;
-    --code: #10151b; --critical: #fb7185; --high: #fb923c; --medium: #facc15; --low: #60a5fa;
-    --informational: #a8b3c0; --unset: #a8b3c0;
+    --bg: #1a1f27; --row: #212731; --open: #2a313d; --line: #323a46; --ink: #dde3ea;
+    --soft: #93a0b0; --code: #161b22; --heat: #4f8dff;
   }
 }
 * { box-sizing: border-box; }
-body {
-  margin: 0; background: var(--bg); color: var(--text);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 13.5px/1.45 var(--ui); font-variant-numeric: tabular-nums; }
+main { max-width: 90rem; margin: 0 auto; }
+a { color: inherit; text-underline-offset: .15em; }
+code, pre { font-family: var(--mono); }
+code { font-size: .92em; overflow-wrap: anywhere; }
+.critical { --level: var(--critical); } .high { --level: var(--high); }
+.medium { --level: var(--medium); } .low { --level: var(--low); }
+.informational { --level: var(--informational); } .unset { --level: var(--unset); }
+
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem 1.6rem;
+  padding: .85rem 1rem .6rem; }
+h1 { font-size: 15px; font-weight: 650; margin: 0; }
+.facts { display: flex; flex-wrap: wrap; gap: .1rem 1.25rem; margin: 0; padding: 0;
+  list-style: none; color: var(--soft); }
+.facts b { color: var(--ink); font-weight: 600; }
+.files { padding: 0 1rem .5rem; color: var(--soft); }
+.files summary { cursor: pointer; }
+.files ul, .logs { list-style: none; margin: .25rem 0 0; padding: 0; }
+.files ul { max-height: 14rem; overflow: auto; }
+.logs { padding: 0 1rem .5rem; color: var(--soft); }
+
+.pick { position: absolute; opacity: 0; pointer-events: none; }
+.pick:focus-visible ~ .panel { outline: 2px solid var(--low); outline-offset: -2px; }
+.panel { padding: .2rem 1rem 1rem; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: .4rem; }
+.tiles label { cursor: pointer; padding: .55rem .8rem .6rem; color: var(--on);
+  background: var(--level); }
+.tiles label.all { background: var(--row); color: var(--ink); }
+.tiles b { display: block; font-size: 1.95rem; line-height: 1.15; font-weight: 650; }
+.panel h2 { font-size: inherit; font-weight: 400; color: var(--soft); margin: .95rem 0 .35rem; }
+.strip { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(4.7rem, 1fr); gap: 2px;
+  overflow-x: auto; }
+.strip label, .strip .none { min-height: 4.3rem; padding: .4rem .5rem; font-size: 11.5px;
+  line-height: 1.2; background: color-mix(in srgb, var(--heat) var(--x, 0%), var(--row)); }
+.strip label { cursor: pointer; }
+.strip label:hover { outline: 1px solid var(--soft); outline-offset: -1px; }
+.strip .none { color: var(--soft); }
+.strip b { display: block; font-size: 1.3rem; line-height: 1.2; font-weight: 600; }
+.head { position: sticky; top: 0; z-index: 2; background: var(--bg); }
+.cols { display: grid; grid-template-columns: var(--cols); padding: .25rem 1rem;
+  color: var(--soft); border-block: 1px solid var(--line); }
+.cols span:nth-child(2) { text-align: right; padding-right: 1.1rem; }
+
+.rule { background: var(--row); border-bottom: 1px solid var(--line); }
+.rule.critical { background: color-mix(in srgb, var(--critical) 13%, var(--row)); }
+.rule.high { background: color-mix(in srgb, var(--high) 7%, var(--row)); }
+.rule > summary { display: grid; grid-template-columns: var(--cols); align-items: center;
+  padding: .32rem 1rem; cursor: pointer; list-style: none; }
+.rule > summary::-webkit-details-marker { display: none; }
+.rule > summary:hover, .rule[open] > summary { background: var(--open); }
+.rule > summary:focus-visible { outline: 2px solid var(--low); outline-offset: -2px; }
+.sev { justify-self: start; min-width: 3.1rem; text-align: center; padding: 0 .35rem;
+  background: var(--level); color: var(--on); font-weight: 600; font-size: 12px; }
+.hits { position: relative; text-align: right; padding-right: 1.1rem; font-weight: 600; }
+.hits::before { content: ""; position: absolute; left: 0; right: 1.1rem; bottom: 0; height: 3px;
+  background: linear-gradient(90deg, var(--level) var(--w), transparent var(--w)); }
+.name { overflow-wrap: anywhere; padding-right: 1rem; }
+.kind { color: var(--soft); margin-left: .6em; }
+.tech { color: var(--soft); font-family: var(--mono); font-size: .9em; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+
+.body { display: grid; grid-template-columns: minmax(0, 24rem) minmax(0, 1fr); gap: 1.4rem;
+  padding: .7rem 1rem 1rem calc(4.6rem + 1rem); background: var(--open);
+  border-left: 3px solid var(--level); }
+.about p { margin: 0 0 .7rem; overflow-wrap: anywhere; }
+dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .1rem .9rem;
+  margin: 0; }
+dt { color: var(--soft); }
+dd { margin: 0; overflow-wrap: anywhere; }
+dd ul, .plain { list-style: none; margin: 0; padding: 0; }
+h3 { font-size: inherit; font-weight: 400; color: var(--soft); margin: 0 0 .3rem; }
+pre { background: var(--code); margin: 0 0 .5rem; padding: .55rem .7rem; font-size: 12px;
+  line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem;
+  overflow: auto; }
+.quiet { color: var(--soft); margin: 0; }
+.empty { padding: 2.5rem 1rem; font-size: 15px; background: var(--row); margin: 0; }
+h2 { font-size: 14px; font-weight: 600; margin: 1.5rem 1rem .4rem; }
+.notes { background: var(--row); padding: .3rem 1rem; }
+.plain li { padding: .25rem 0; overflow-wrap: anywhere; }
+.skipped { padding: .4rem 1rem; background: var(--row); }
+.skipped > summary { cursor: pointer; }
+footer { padding: 1.1rem 1rem 2rem; color: var(--soft); }
+
+@media (max-width: 760px) {
+  :root { --cols: 3.5rem 3.2rem minmax(0, 1fr); }
+  .tech, .cols span:nth-child(4) { display: none; }
+  .hits, .cols span:nth-child(2) { padding-right: .7rem; }
+  .hits::before { right: .7rem; }
+  .body { grid-template-columns: minmax(0, 1fr); padding-left: 1rem; }
 }
-main { max-width: 1000px; margin: 0 auto; padding: 32px 16px 64px; }
-h1 { font-size: 26px; margin: 0 0 4px; }
-h2 { font-size: 18px; margin: 32px 0 10px; }
-a { color: inherit; }
-code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace; }
-.muted { color: var(--muted); }
-.logs { margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; overflow-wrap: anywhere; }
-details.files { background: none; border: 0; margin: 8px 0 0; font-size: 13px; }
-details.files summary { display: list-item; padding: 0; color: var(--muted); }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 10px; margin: 24px 0 0; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  padding: 12px 14px; }
-.card b { display: block; font-size: 24px; line-height: 1.2; }
-.card span { color: var(--muted); font-size: 13px; }
-.levels { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; }
-.levels a { text-decoration: none; font-size: 13px; padding: 2px 10px; border-radius: 99px;
-  border: 1px solid currentColor; }
-.critical { color: var(--critical); } .high { color: var(--high); }
-.medium { color: var(--medium); } .low { color: var(--low); }
-.informational { color: var(--informational); } .unset { color: var(--unset); }
-details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  margin: 0 0 8px; }
-summary { cursor: pointer; padding: 10px 14px; display: flex; gap: 12px; align-items: baseline; }
-summary .title { flex: 1; font-weight: 600; overflow-wrap: anywhere; }
-summary .count { font-variant-numeric: tabular-nums; white-space: nowrap; }
-.body { border-top: 1px solid var(--line); padding: 12px 14px; }
-.body p { margin: 0 0 10px; overflow-wrap: anywhere; }
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0 0 12px;
-  font-size: 13px; }
-dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
-dd ul { margin: 0; padding: 0; list-style: none; }
-.tag { display: inline-block; background: var(--code); border-radius: 4px; padding: 0 6px;
-  margin: 0 4px 2px 0; }
-pre { background: var(--code); border-radius: 6px; padding: 10px 12px; margin: 0 0 8px;
-  font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: 420px; overflow: auto; }
-h3 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 12px 0 6px; }
-.plain { list-style: none; margin: 0; padding: 0; font-size: 13px; }
-.plain li { padding: 6px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
-footer { margin-top: 40px; font-size: 13px; color: var(--muted); }
 @media print {
-  body { background: #fff; } pre { max-height: none; }
+  :root { --bg: #fff; --row: #fff; --open: #fff; --code: #fff; --ink: #000; --soft: #444; }
+  * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  .head { position: static; } pre { max-height: none; }
   details::details-content { content-visibility: visible; display: block; }
 }
 """
+    + _FILTER_STYLE
+)
 
 
 def _text(value: object) -> str:
@@ -172,11 +274,24 @@ def _items(values: Sequence[str], render: type[str] | object = _text) -> str:
     return "<ul>" + "".join(f"<li>{render(v)}</li>" for v in values) + "</ul>"
 
 
-def _hit(hit: Hit, opened: bool, budget: list[int]) -> str:
+def _count(number: int, noun: str) -> str:
+    return f"{number:,} {noun}{'' if number == 1 else 's'}"
+
+
+def _techniques(tags: Sequence[str]) -> str:
+    found = [t[7:].upper() for t in tags if _TECHNIQUE.fullmatch(t.lower())]
+    return " ".join(found[:2])
+
+
+def _tactics(tags: Sequence[str]) -> list[str]:
+    named = {t.lower().removeprefix("attack.") for t in tags if t.lower().startswith("attack.")}
+    return [t for t in TACTICS if t in named]
+
+
+def _hit(hit: Hit, top: float, budget: list[int]) -> str:
     rule = hit.rule
     level = _level(hit)
     is_result = isinstance(rule, Correlation) or rule.aggregation is not None
-    noun = ("result" if is_result else "event") + ("" if hit.count == 1 else "s")
     rows: list[tuple[str, str]] = []
     if rule.level and rule.level != level:
         rows.append(("Level", _text(rule.level)))
@@ -187,7 +302,7 @@ def _hit(hit: Hit, opened: bool, budget: list[int]) -> str:
     if rule.path:
         rows.append(("File", f"<code>{_text(rule.path)}</code>"))
     if rule.tags:
-        rows.append(("Tags", "".join(f'<span class="tag">{_text(t)}</span>' for t in rule.tags)))
+        rows.append(("Tags", _text(", ".join(rule.tags))))
     if rule.falsepositives:
         rows.append(("False positives", _items(rule.falsepositives)))
     if rule.references:
@@ -200,22 +315,60 @@ def _hit(hit: Hit, opened: bool, budget: list[int]) -> str:
             break
         budget[0] -= len(block)
         examples.append(block)
-    shown = ""
+    proof = ""
     if examples:
-        shown = f"<h3>First matches, {len(examples)} of {hit.count:,}</h3>" + "".join(examples)
+        noun = "results" if is_result else "matches"
+        proof = f"<h3>First {noun}, {len(examples)} of {hit.count:,}</h3>" + "".join(examples)
     if len(examples) < len(hit.examples):
-        shown += '<p class="muted">More examples left out: the report reached its size limit.</p>'
+        proof += '<p class="quiet">More examples left out: the report reached its size limit.</p>'
     description = f"<p>{_text(rule.description)}</p>" if rule.description else ""
+    kind = '<span class="kind">correlation</span>' if is_result else ""
+    width = round(100 * math.log1p(hit.count) / top)
+    classes = " ".join([level, *(f"tc-{t}" for t in _tactics(rule.tags))])
     return (
-        f"<details{' open' if opened else ''}><summary>"
-        f'<span class="title">{_text(rule.title)}</span>'
-        f'<span class="count {level}">{hit.count:,} {noun}</span></summary>'
-        f'<div class="body">{description}<dl>{meta}</dl>{shown}</div></details>'
+        f'<details class="rule {classes}"><summary>'
+        f'<span class="sev">{_SHORT[level]}</span>'
+        f'<span class="hits" style="--w:{width}%">{hit.count:,}</span>'
+        f'<span class="name">{_text(rule.title)}{kind}</span>'
+        f'<span class="tech">{_text(_techniques(rule.tags))}</span></summary>'
+        f'<div class="body"><div class="about">{description}<dl>{meta}</dl></div>'
+        f'<div class="proof">{proof}</div></div></details>'
     )
 
 
-def _card(value: int, label: str) -> str:
-    return f'<div class="card"><b>{value:,}</b><span>{label}</span></div>'
+def _panel(groups: dict[str, list[Hit]], hits: Sequence[Hit]) -> tuple[str, str]:
+    """Radio buttons and the labels that pick them. CSS alone hides the rows, so no script runs."""
+    pick = '<input class="pick" type="radio" name="{}" id="{}"{}>'
+    picks = pick.format("level", "f-all", " checked")
+    tiles = f'<label for="f-all" class="all"><b>{len(hits):,}</b>All rules</label>'
+    for level, group in groups.items():
+        picks += pick.format("level", f"f-{level}", "")
+        tiles += (
+            f'<label for="f-{level}" class="{level}"><b>{len(group):,}</b>{_NAME[level]}</label>'
+        )
+    counts = {t: 0 for t in TACTICS}
+    for hit in hits:
+        for tactic in _tactics(hit.rule.tags):
+            counts[tactic] += 1
+    busiest = max(counts.values())
+    if not busiest:
+        return picks, f'<div class="panel"><div class="tiles">{tiles}</div></div>'
+    picks += pick.format("tactic", "t-all", " checked")
+    cells = '<label for="t-all"><b>Any</b>tactic</label>'
+    for tactic, count in counts.items():
+        name = tactic.replace("-", " ").capitalize().replace(" and c", " and c")
+        if not count and tactic == "defense-evasion":
+            continue
+        if not count:
+            cells += f'<span class="none"><b>0</b>{name}</span>'
+            continue
+        picks += pick.format("tactic", f"t-{tactic}", "")
+        heat = round(12 + 63 * math.sqrt(count / busiest))
+        cells += f'<label for="t-{tactic}" style="--x:{heat}%"><b>{count:,}</b>{name}</label>'
+    return picks, (
+        f'<div class="panel"><div class="tiles">{tiles}</div>'
+        f'<h2>Matching rules by ATT&amp;CK tactic</h2><div class="strip">{cells}</div></div>'
+    )
 
 
 def render(
@@ -229,46 +382,51 @@ def render(
     groups: dict[str, list[Hit]] = {}
     for hit in report.hits:
         groups.setdefault(_level(hit), []).append(hit)
-    budget = [MAX_EXAMPLES_TOTAL]
-    first = {id(h) for h in [h for h in report.hits if _level(h) in OPEN_LEVELS][:MAX_OPEN]}
-    links = "".join(
-        f'<a class="{level}" href="#level-{level}">{level} {len(hits)}</a>'
-        for level, hits in groups.items()
-    )
-    sections = "".join(
-        f'<h2 id="level-{level}" class="{level}">{level.capitalize()}</h2>'
-        + "".join(_hit(h, id(h) in first, budget) for h in hits)
-        for level, hits in groups.items()
-    )
-    if not report.hits:
-        verdict = "No rule matched these logs."
-        if not report.ran:
-            couldnt = report.skipped or load_errors
-            verdict = "No rule could run." if couldnt else "No rule applies to these logs."
-        sections = f'<h2>Matches</h2><p class="muted">{verdict}</p>'
     skipped = [(str(i.path or i.title), why) for i, why in report.skipped]
     skipped += [(str(path), why) for path, why in load_errors]
+    budget = [MAX_EXAMPLES_TOTAL]
+    if report.hits:
+        top = math.log1p(max(h.count for h in report.hits))
+        picks, panel = _panel(groups, report.hits)
+        rows = "".join(_hit(h, top, budget) for h in report.hits)
+        table = (
+            f'{picks}{panel}<div class="head">'
+            '<div class="cols"><span>Level</span><span>Hits</span><span>Rule</span>'
+            f'<span>Technique</span></div></div><div class="list">{rows}</div>'
+        )
+    else:
+        verdict = "No rule matched these logs."
+        if not report.ran:
+            verdict = "No rule could run." if skipped else "No rule applies to these logs."
+        table = f'<p class="empty">{verdict}</p>'
+    facts = [
+        (report.events, "events"),
+        (report.ran, "rules run"),
+        (len(report.hits), "matched"),
+        (len(skipped), "skipped"),
+        (report.other_logs, "for other logs"),
+    ]
+    fact_items = "".join(f"<li><b>{n:,}</b> {label}</li>" for n, label in facts)
     other = ""
     if report.warnings:
-        rows = "".join(f"<li>{_text(w)}</li>" for w in report.warnings)
-        other += f'<h2>Warnings</h2><ul class="plain">{rows}</ul>'
+        items = "".join(f"<li>{_text(w)}</li>" for w in report.warnings)
+        other += f'<h2>Warnings</h2><div class="notes"><ul class="plain">{items}</ul></div>'
     if skipped:
-        rows = "".join(
-            f'<li><code>{_text(what)}</code><br><span class="muted">{_text(why)}</span></li>'
+        items = "".join(
+            f'<li><code>{_text(what)}</code><br><span class="quiet">{_text(why)}</span></li>'
             for what, why in skipped
         )
         other += (
-            f"<h2>Rules skipped</h2><details><summary>"
-            f'<span class="title">{len(skipped):,} {"rule" if len(skipped) == 1 else "rules"}'
-            " did not run</span></summary>"
-            f'<div class="body"><ul class="plain">{rows}</ul></div></details>'
+            f'<h2>Rules skipped</h2><details class="skipped"><summary>'
+            f"{len(skipped):,} {'rule' if len(skipped) == 1 else 'rules'} did not run</summary>"
+            f'<ul class="plain">{items}</ul></details>'
         )
-    log_list = (
-        f'<ul class="logs muted">{"".join(f"<li><code>{_text(p)}</code></li>" for p in logs)}</ul>'
-    )
+    paths = "".join(f"<li><code>{_text(path)}</code></li>" for path in logs)
+    log_list = f'<ul class="logs">{paths}</ul>'
     if len(logs) > MAX_LOGS_SHOWN:
         log_list = (
-            f'<details class="files"><summary>{len(logs):,} log paths</summary>{log_list}</details>'
+            f'<details class="files"><summary>{_count(len(logs), "log path")}</summary>'
+            f"<ul>{paths}</ul></details>"
         )
     when = generated.strftime("%Y-%m-%d %H:%M UTC")
     return (
@@ -276,13 +434,8 @@ def render(
         f'<meta http-equiv="Content-Security-Policy" content="{_CSP}">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>sigma2sql hunt report</title><style>{_STYLE}</style></head><body><main>"
-        f'<h1>Hunt report</h1><div class="muted">{when}</div>'
-        f"{log_list}"
-        '<div class="cards">'
-        f"{_card(report.events, 'events read')}{_card(report.ran, 'rules run')}"
-        f"{_card(len(report.hits), 'rules matched')}{_card(len(skipped), 'rules skipped')}"
-        f"{_card(report.other_logs, 'for other log sources')}</div>"
-        f'<div class="levels">{links}</div>{sections}{other}'
-        f"<footer>Written by sigma2sql {_text(version)}.</footer>"
+        f'<header><h1>Hunt report</h1><ul class="facts">{fact_items}</ul></header>'
+        f"{log_list}{table}{other}"
+        f"<footer>Written by sigma2sql {_text(version)} on {when}.</footer>"
         "</main></body></html>\n"
     )
