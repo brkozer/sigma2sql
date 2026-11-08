@@ -137,10 +137,11 @@ h1 { font-size: 15px; font-weight: 650; margin: 0; }
 .tiles label.all { background: var(--row); color: var(--ink); }
 .tiles b { display: block; font-size: 1.95rem; line-height: 1.15; font-weight: 650; }
 .panel h2 { font-size: inherit; font-weight: 400; color: var(--soft); margin: .95rem 0 .35rem; }
-.strip { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(4.7rem, 1fr); gap: 2px;
-  overflow-x: auto; }
+.strip { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(min-content, 1fr);
+  gap: 2px; overflow-x: auto; }
 .strip label, .strip .none { min-height: 4.3rem; padding: .4rem .5rem; font-size: 11.5px;
-  line-height: 1.2; background: color-mix(in srgb, var(--heat) var(--x, 0%), var(--row)); }
+  line-height: 1.2;
+  background: color-mix(in srgb, var(--heat) var(--x, 0%), var(--row)); }
 .strip label { cursor: pointer; }
 .strip label:hover { outline: 1px solid var(--soft); outline-offset: -1px; }
 .strip .none { color: var(--soft); }
