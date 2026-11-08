@@ -9,12 +9,14 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from sigma2sql import html_report
 from sigma2sql.collection import Collection, rule_files
 from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
@@ -26,6 +28,8 @@ from sigma2sql.runner import matching_events, read_jsonl, rows
 from sigma2sql.runner import target as runner_target
 from sigma2sql.sarif import Finding, report
 from sigma2sql.sql import DIALECTS, Target, to_query
+
+HTML_EXAMPLES = 5
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -61,6 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     hunt_p.add_argument("-e", "--examples", type=_count, default=0, help="matching events to show")
     hunt_p.add_argument("--format", choices=("table", "json"), default="table")
     hunt_p.add_argument("--sarif", type=Path, help="also write the matches to this SARIF file")
+    hunt_p.add_argument("--html", type=Path, help="also write a report to this HTML file")
     hunt_p.add_argument(
         "--fail-on", choices=LEVELS, help="exit 1 if a rule at this level or above matches"
     )
@@ -270,8 +275,12 @@ def _test(path: Path, events_path: Path, target: Target, expect: str | None) -> 
 
 def _write_sarif(path: Path, findings: list[Finding]) -> bool:
     text = json.dumps(report(findings, version("sigma2sql")), indent=2)
+    return _write(path, text + "\n")
+
+
+def _write(path: Path, text: str) -> bool:
     try:
-        path.write_text(text + "\n", encoding="utf-8")
+        path.write_text(text, encoding="utf-8", errors="replace")
     except OSError as exc:
         print(f"sigma2sql: {exc}", file=sys.stderr)
         return False
@@ -364,7 +373,9 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
     col = Collection.load(args.rules)
     _report_errors(col)
     try:
-        report_ = hunt(col, args.logs, target, args.examples)
+        # A report is little use without events to read, even if none go to the terminal.
+        wanted = args.examples or (HTML_EXAMPLES if args.html else 0)
+        report_ = hunt(col, args.logs, target, wanted)
     except Exception as exc:  # DuckDB raises its own error types for unreadable files
         print(f"sigma2sql: {exc}", file=sys.stderr)
         return 2
@@ -374,9 +385,9 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
         print(f"skip {item.path or item.title}: {reason}", file=sys.stderr)
 
     if args.format == "json":
-        print(json.dumps([_hit_json(h) for h in report_.hits], indent=2))
+        print(json.dumps([_hit_json(h, args.examples) for h in report_.hits], indent=2))
     else:
-        _print_table(report_)
+        _print_table(report_, args.examples)
     print(
         f"{len(report_.hits)} of {report_.ran} rules matched {report_.events} events"
         f" ({len(report_.skipped) + len(col.errors)} rules skipped)",
@@ -386,6 +397,12 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
         print(f"{report_.other_logs} rules are for other log sources", file=sys.stderr)
     if args.sarif and not _write_sarif(args.sarif, [_hit_finding(h) for h in report_.hits]):
         return 2
+    if args.html:
+        page = html_report.render(
+            report_, col.errors, args.logs, version("sigma2sql"), datetime.now(UTC)
+        )
+        if not _write(args.html, page):
+            return 2
     if not report_.ran and (report_.skipped or col.errors):
         print("sigma2sql: no rule could run", file=sys.stderr)
         return 2
@@ -402,7 +419,7 @@ def _hit_finding(h: Hit) -> Finding:
     return Finding(h.rule.id or h.rule.title, h.rule.title, h.rule.level, message, h.rule.path)
 
 
-def _print_table(report: Report) -> None:
+def _print_table(report: Report, examples: int) -> None:
     if not report.hits:
         return
     width = max(4, *(len(str(h.count)) for h in report.hits))
@@ -410,11 +427,11 @@ def _print_table(report: Report) -> None:
     for h in report.hits:
         where = f"  ({h.rule.path})" if h.rule.path else ""
         print(f"{h.rule.level or '-':<14}{h.count:>{width}}  {h.rule.title}{where}")
-        for event in h.examples:
+        for event in h.examples[:examples]:
             print(f"{'':<14}{'':>{width}}    {event}")
 
 
-def _hit_json(h: Hit) -> dict[str, object]:
+def _hit_json(h: Hit, examples: int) -> dict[str, object]:
     return {
         "title": h.rule.title,
         "id": h.rule.id,
@@ -422,7 +439,7 @@ def _hit_json(h: Hit) -> dict[str, object]:
         "path": str(h.rule.path) if h.rule.path else None,
         "correlation": isinstance(h.rule, Correlation) or h.rule.aggregation is not None,
         "count": h.count,
-        "examples": [json.loads(e) for e in h.examples],
+        "examples": [json.loads(e) for e in h.examples[:examples]],
     }
 
 

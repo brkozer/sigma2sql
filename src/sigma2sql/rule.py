@@ -85,6 +85,10 @@ class Rule:
     path: Path | None = dataclasses.field(default=None, compare=False)
     # Filters that apply to this rule; an event must pass all of them.
     filters: tuple[Filter, ...] = ()
+    description: str | None = None
+    tags: tuple[str, ...] = ()
+    falsepositives: tuple[str, ...] = ()
+    references: tuple[str, ...] = ()
 
     def compile(self, placeholders: Placeholders | None = None) -> Expr:
         base = _compile(self.searches, self.conditions, placeholders)
@@ -114,6 +118,10 @@ class Correlation:
     generate: bool = False
     name: str | None = None
     path: Path | None = dataclasses.field(default=None, compare=False)
+    description: str | None = None
+    tags: tuple[str, ...] = ()
+    falsepositives: tuple[str, ...] = ()
+    references: tuple[str, ...] = ()
 
 
 Document = Rule | Correlation
@@ -186,6 +194,22 @@ def _meta(doc: dict[str, Any], path: Path | None) -> dict[str, Any]:
     }
 
 
+def _about(doc: dict[str, Any]) -> dict[str, Any]:
+    """What a report shows about a rule; none of it changes what the rule matches."""
+
+    def texts(key: str) -> tuple[str, ...]:
+        value = doc.get(key)
+        return tuple(str(v) for v in value) if isinstance(value, list) else ()
+
+    description = doc.get("description")
+    return {
+        "description": str(description).strip() if description is not None else None,
+        "tags": texts("tags"),
+        "falsepositives": texts("falsepositives"),
+        "references": texts("references"),
+    }
+
+
 def _filter(doc: dict[str, Any], path: Path | None) -> Filter:
     spec = doc["filter"]
     if not isinstance(spec, dict):
@@ -247,6 +271,7 @@ def _rule(doc: dict[str, Any], path: Path | None) -> Rule:
         conditions=conditions,
         logsource={str(k): str(v) for k, v in logsource.items() if v is not None},
         **_meta(doc, path),
+        **_about(doc),
     )
     if not any("|" in c for c in conditions):
         return rule
@@ -274,6 +299,10 @@ def _aggregation(rule: Rule, text: str, timeframe: Any) -> Correlation:
         condition=((LEGACY_OPS[m["op"]], float(m["value"])),),
         field=m["field"] or None,
         path=rule.path,
+        description=rule.description,
+        tags=rule.tags,
+        falsepositives=rule.falsepositives,
+        references=rule.references,
     )
 
 
@@ -341,6 +370,7 @@ def _correlation(doc: dict[str, Any], path: Path | None) -> Correlation:
         aliases={str(k): {str(r): str(f) for r, f in v.items()} for k, v in aliases.items()},
         generate=bool(spec.get("generate", False)),
         **_meta(doc, path),
+        **_about(doc),
     )
 
 
