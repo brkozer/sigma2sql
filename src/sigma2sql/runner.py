@@ -8,6 +8,7 @@ import re
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from sigma2sql.rule import Rule
@@ -17,9 +18,14 @@ TABLE = "events"
 COLUMN = "data"
 
 
-def connect() -> sqlite3.Connection:
-    """SQLite connection with the functions the sqlite dialect uses and SQLite lacks."""
-    conn = sqlite3.connect(":memory:")
+def connect(path: str | None = None) -> sqlite3.Connection:
+    """SQLite connection with the functions the sqlite dialect uses and SQLite lacks.
+
+    In memory unless a `path` is given; a file is opened read-only."""
+    if path is None:
+        conn = sqlite3.connect(":memory:")
+    else:
+        conn = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
     conn.create_function("regexp", 2, _regexp, deterministic=True)
     conn.create_function("cidr_match", 2, _cidr_match, deterministic=True)
     conn.create_aggregate("sigma_percentile", 2, _Percentile)  # type: ignore[arg-type]

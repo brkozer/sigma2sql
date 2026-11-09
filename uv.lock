@@ -768,6 +768,9 @@ duckdb = [
 evtx = [
     { name = "evtx" },
 ]
+postgres = [
+    { name = "psycopg", extra = ["binary"] },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -790,9 +793,10 @@ requires-dist = [
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.3" },
     { name = "evtx", marker = "extra == 'evtx'", specifier = ">=0.8" },
     { name = "numpy", marker = "extra == 'duckdb'", specifier = ">=2.0" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2.3" },
     { name = "pyyaml", specifier = ">=6.0.2" },
 ]
-provides-extras = ["duckdb", "evtx"]
+provides-extras = ["duckdb", "postgres", "evtx"]
 
 [package.metadata.requires-dev]
 dev = [

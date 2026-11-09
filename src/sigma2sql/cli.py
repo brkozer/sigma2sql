@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from importlib.metadata import version
@@ -16,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from sigma2sql import html_report
+from sigma2sql import database, html_report
 from sigma2sql.collection import Collection, rule_files
 from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
@@ -60,12 +61,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     hunt_p.add_argument("rules", nargs="+", type=Path, help="rule files or directories")
     hunt_p.add_argument(
-        "-l", "--logs", nargs="+", required=True, help="log files; globs such as 'logs/*.json'"
+        "-l",
+        "--logs",
+        nargs="+",
+        help=f"log files; globs such as 'logs/*.json'. Without it, the database in ${database.ENV}",
     )
     hunt_p.add_argument("-e", "--examples", type=_count, default=0, help="matching events to show")
     hunt_p.add_argument("--format", choices=("table", "json"), default="table")
     hunt_p.add_argument("--sarif", type=Path, help="also write the matches to this SARIF file")
     hunt_p.add_argument("--html", type=Path, help="also write a report to this HTML file")
+    hunt_p.add_argument("-t", "--table", help="table holding the events, in a database")
+    hunt_p.add_argument("--json-column", help="read fields from this JSON column, in a database")
+    hunt_p.add_argument("--keyword-column", help="column searched by keyword rules, in a database")
+    hunt_p.add_argument("--since", help="only events since: 7d, 12h, 30m or 2026-11-01")
+    hunt_p.add_argument(
+        "--timeout",
+        type=_positive,
+        default=database.DEFAULT_TIMEOUT,
+        help="seconds each rule may take on PostgreSQL or ClickHouse (default: %(default)s)",
+    )
     hunt_p.add_argument(
         "--fail-on", choices=LEVELS, help="exit 1 if a rule at this level or above matches"
     )
@@ -106,6 +120,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _test(args.rule, args.events, target, args.expect)
 
 
+def _positive(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
+def _since(text: str) -> float:
+    match = re.fullmatch(r"(\d+)([smhdw])", text.strip())
+    if match:
+        seconds = int(match[1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[match[2]]
+        return datetime.now(UTC).timestamp() - seconds
+    try:
+        when = datetime.fromisoformat(text.strip())
+    except ValueError as exc:
+        raise ValueError(f"--since: expected 7d, 12h, 30m or a date, not {text!r}") from exc
+    return (when if when.tzinfo else when.replace(tzinfo=UTC)).timestamp()
+
+
 def _count(text: str) -> int:
     value = int(text)
     if value < 0:
@@ -136,16 +169,17 @@ def _target(args: argparse.Namespace) -> Target:
         raise ValueError(f"mapping: {exc}") from exc
     target = Target(
         dialect=getattr(args, "dialect", "sqlite"),
-        table=getattr(args, "table", "events"),
+        table=getattr(args, "table", None) or "events",
         mapping=mapping,
         json_column=getattr(args, "json_column", None),
         keyword_column=getattr(args, "keyword_column", None),
     )
     profile = args.profile
-    if args.command == "hunt" and not profile and any(_is_evtx(p) for p in args.logs):
+    logs = getattr(args, "logs", None) or []
+    if args.command == "hunt" and not profile and any(_is_evtx(p) for p in logs):
         # EVTX events have one known layout, so the right profile needs no asking.
         profile = "evtx"
-        if not all(_is_evtx(p) for p in args.logs):
+        if not all(_is_evtx(p) for p in logs):
             print("warning: all logs are read with the evtx profile", file=sys.stderr)
     if profile:
         target = apply_profile(target, load_profile(profile))
@@ -153,6 +187,8 @@ def _target(args: argparse.Namespace) -> Target:
         target = replace(target, placeholders=load_placeholders(args.placeholders))
     if args.nested:
         target = replace(target, nested=True)
+    if getattr(args, "since", None):
+        target = replace(target, since=_since(args.since))
     if args.timestamp_field:
         target = replace(target, timestamp=args.timestamp_field)
     if args.timestamp_format:
@@ -370,15 +406,32 @@ def _check_rule(path: Path, cases: list[tuple[Path, bool]], target: Target) -> l
 def _hunt(args: argparse.Namespace, target: Target) -> int:
     if _no_rules(args.rules):
         return 2
+    dsn = os.environ.get(database.ENV, "")
+    if not args.logs and not dsn:
+        print(f"sigma2sql: give --logs, or set {database.ENV} to a database", file=sys.stderr)
+        return 2
+    if args.logs and (args.table or args.json_column or args.keyword_column):
+        print("sigma2sql: --table and the column options are for a database", file=sys.stderr)
+        return 2
     col = Collection.load(args.rules)
     _report_errors(col)
     try:
         # A report is little use without events to read, even if none go to the terminal.
         wanted = args.examples or (HTML_EXAMPLES if args.html else 0)
-        report_ = hunt(col, args.logs, target, wanted)
-    except Exception as exc:  # DuckDB raises its own error types for unreadable files
-        print(f"sigma2sql: {exc}", file=sys.stderr)
+        if args.logs:
+            report_ = hunt(col, args.logs, target, wanted, _progress())
+        else:
+            db = database.connect(dsn, args.timeout)
+            try:
+                report_ = database.hunt_database(col, db, target, wanted, _progress())
+            finally:
+                db.close()
+    except Exception as exc:  # the drivers raise their own error types
+        print(f"sigma2sql: {database.scrub(str(exc), dsn)}", file=sys.stderr)
         return 2
+    finally:
+        if sys.stderr.isatty():
+            print("\r\033[K", end="", file=sys.stderr)
     for warning in report_.warnings:
         print(f"warning: {warning}", file=sys.stderr)
     for item, reason in report_.skipped:
@@ -399,7 +452,11 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
     written = not args.sarif or _write_sarif(args.sarif, [_hit_finding(h) for h in report_.hits])
     if args.html:
         page = html_report.render(
-            report_, col.errors, args.logs, version("sigma2sql"), datetime.now(UTC)
+            report_,
+            col.errors,
+            args.logs or [database.describe(dsn)],
+            version("sigma2sql"),
+            datetime.now(UTC),
         )
         written = _write(args.html, page) and written
     if not written:
@@ -412,6 +469,16 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
         if any(h.rank <= limit for h in report_.hits):
             return 1
     return 0
+
+
+def _progress() -> Callable[[int, int], None] | None:
+    if not sys.stderr.isatty():
+        return None
+
+    def show(done: int, total: int) -> None:
+        print(f"\rrule {done:,} of {total:,}", end="", file=sys.stderr, flush=True)
+
+    return show
 
 
 def _hit_finding(h: Hit) -> Finding:

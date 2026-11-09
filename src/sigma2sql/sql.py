@@ -103,6 +103,8 @@ class Target:
     product: str | None = None
     # Values for `%name%` placeholders in rules that use the `expand` modifier.
     placeholders: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
+    # Only events from this moment on, in seconds since 1970.
+    since: float | None = None
 
 
 def to_query(rule: Rule, target: Target, columns: str = "*") -> str:
@@ -119,6 +121,8 @@ def to_query(rule: Rule, target: Target, columns: str = "*") -> str:
 def source(rule: Rule, target: Target) -> tuple[str, str]:
     """The quoted table and WHERE clause for a rule, after logsource routing."""
     where = to_where(rule.compile(target.placeholders), target)
+    if target.since is not None:
+        where = f"({Renderer(target).epoch()} >= {target.since!r} AND {where})"
     route = next((r for r in target.routes if r.applies(rule.logsource)), None)
     if route is None:
         return quote_table(target.table), where

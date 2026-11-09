@@ -6,7 +6,7 @@ import glob
 import ipaddress
 import json
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -50,15 +50,20 @@ class Report:
     warnings: list[str] = field(default_factory=list)
 
 
-def connect() -> Any:
+def open_duckdb(path: str = ":memory:", read_only: bool = False) -> Any:
     try:
         import duckdb
     except ImportError as exc:  # pragma: no cover - depends on the install
         raise SystemExit("sigma2sql hunt needs DuckDB: pip install 'sigma2sql[duckdb]'") from exc
-    con = duckdb.connect()
+    con = duckdb.connect(path, read_only=read_only)
     # A time without a zone must mean the same on every machine, as it does in `test`.
     con.execute("SET TimeZone = 'UTC'")
     con.create_function("cidr_match", _cidr_match, ["VARCHAR", "VARCHAR"], "BOOLEAN")
+    return con
+
+
+def connect() -> Any:
+    con = open_duckdb()
     con.execute(f"CREATE TABLE {TABLE} ({COLUMN} JSON)")
     return con
 
@@ -141,7 +146,11 @@ def _evtx_events(path: str, warnings: list[str]) -> Iterator[str]:
 
 
 def hunt(
-    rules: Collection, paths: list[str], base: Target | None = None, examples: int = 0
+    rules: Collection,
+    paths: list[str],
+    base: Target | None = None,
+    examples: int = 0,
+    progress: Callable[[int, int], None] | None = None,
 ) -> Report:
     """Run every rule and correlation in `rules` over the logs in `paths`.
 
@@ -154,30 +163,56 @@ def hunt(
     # All logs share one table here, so profile routes keep only their conditions.
     routes = tuple(replace(r, table=None) for r in base.routes)
     target = replace(base, dialect="duckdb", table=TABLE, json_column=COLUMN, routes=routes)
+
+    def count(query: str) -> int:
+        found: int = con.execute(f"SELECT COUNT(*) FROM ({query}) q").fetchone()[0]
+        return found
+
+    def sample(query: str, as_rows: bool) -> list[str]:
+        shown = f"SELECT CAST(to_json(q) AS VARCHAR) FROM ({query}) q" if as_rows else query
+        return [row[0] for row in con.execute(f"{shown} LIMIT {examples}").fetchall()]
+
+    columns = f"CAST({COLUMN} AS VARCHAR)"
+    return run_rules(rules, target, events, warnings, count, sample, columns, examples, progress)
+
+
+def run_rules(
+    rules: Collection,
+    target: Target,
+    events: int,
+    warnings: list[str],
+    count: Callable[[str], int],
+    sample: Callable[[str, bool], list[str]],
+    columns: str,
+    examples: int,
+    progress: Callable[[int, int], None] | None = None,
+) -> Report:
+    """Run each rule through `count`, and `sample` the ones that matched."""
     candidates: list[Document] = [*rules.standalone(), *rules.correlations]
     items = [item for item in candidates if _for_these_logs(item, rules, target)]
     hits: list[Hit] = []
     skipped: list[tuple[Document, str]] = []
-    for item in items:
+    for done, item in enumerate(items):
+        if progress:
+            progress(done, len(items))
         try:
-            query, as_rows = _query(item, rules, target)
-            count = con.execute(f"SELECT COUNT(*) FROM ({query}) q").fetchone()[0]
+            query, as_rows = _query(item, rules, target, columns)
+            found = count(query)
         except (RuleError, UnsupportedRule) as exc:
             skipped.append((item, str(exc)))
             continue
-        except Exception as exc:  # DuckDB's own errors: one bad rule must not end the hunt
-            skipped.append((item, str(exc).splitlines()[0]))
+        except Exception as exc:  # the database's own errors: one bad rule must not end the hunt
+            skipped.append((item, str(exc).splitlines()[0] if str(exc) else repr(exc)))
             continue
-        if not count:
+        if not found:
             continue
-        sample: list[str] = []
+        shown: list[str] = []
         if examples:
-            shown = f"SELECT CAST(to_json(q) AS VARCHAR) FROM ({query}) q" if as_rows else query
             try:
-                sample = [row[0] for row in con.execute(f"{shown} LIMIT {examples}").fetchall()]
+                shown = sample(query, as_rows)
             except Exception as exc:  # e.g. a time value out of range in one result row
                 warnings.append(f"{item.title}: no examples: {str(exc).splitlines()[0]}")
-        hits.append(Hit(item, count, sample))
+        hits.append(Hit(item, found, shown))
     hits.sort(key=lambda h: (h.rank, -h.count, h.rule.title))
     other_logs = len(candidates) - len(items)
     return Report(events, hits, len(items) - len(skipped), skipped, other_logs, warnings)
@@ -199,13 +234,13 @@ def _for_these_logs(item: Document, rules: Collection, target: Target) -> bool:
     return item.logsource.get("product", "").lower() == wanted
 
 
-def _query(item: Document, rules: Collection, target: Target) -> tuple[str, bool]:
+def _query(item: Document, rules: Collection, target: Target, columns: str) -> tuple[str, bool]:
     """The SQL for one item and whether it returns result rows rather than events."""
     if isinstance(item, Correlation):
         return correlation_query(item, rules.resolve(item), target), True
     if item.aggregation is not None:
         return to_query(item, target), True
-    return to_query(item, target, columns=f"CAST({COLUMN} AS VARCHAR)"), False
+    return to_query(item, target, columns=columns), False
 
 
 def _cidr_match(value: str, network: str) -> bool:
