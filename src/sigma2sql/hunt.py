@@ -5,9 +5,11 @@ from __future__ import annotations
 import glob
 import ipaddress
 import json
+import re
 import tempfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +147,19 @@ def _evtx_events(path: str, warnings: list[str]) -> Iterator[str]:
         warnings.append(f"{path}: gave up after {errors} damaged chunks")
     if not found and not errors and size > EVTX_HEADER:
         warnings.append(f"{path}: no events found")
+
+
+def parse_since(text: str) -> float:
+    """7d, 12h, 30m or a date, as seconds since 1970. A date with no zone is UTC."""
+    match = re.fullmatch(r"(\d+)([smhdw])", text.strip())
+    if match:
+        seconds = int(match[1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[match[2]]
+        return datetime.now(UTC).timestamp() - seconds
+    try:
+        when = datetime.fromisoformat(text.strip())
+    except ValueError as exc:
+        raise ValueError(f"--since: expected 7d, 12h, 30m or a date, not {text!r}") from exc
+    return (when if when.tzinfo else when.replace(tzinfo=UTC)).timestamp()
 
 
 def hunt(

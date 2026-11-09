@@ -7,11 +7,13 @@ that says `not ParentImage: x` still counts as able to match.
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from sigma2sql import database
 from sigma2sql.collection import Collection
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.expr import (
@@ -29,9 +31,9 @@ from sigma2sql.expr import (
     StrMatch,
     TimePart,
 )
-from sigma2sql.hunt import _for_these_logs
+from sigma2sql.hunt import COLUMN, TABLE, _for_these_logs, connect, load_logs
 from sigma2sql.rule import Correlation, Document, Rule
-from sigma2sql.sql import Renderer, Target
+from sigma2sql.sql import Renderer, Target, quote_table
 
 READY = "ready"
 PARTIAL = "partial"
@@ -53,6 +55,8 @@ class Coverage:
     sampled: int
     skipped: list[tuple[Document, str]] = field(default_factory=list)
     other_logs: int = 0
+    # Every field name found, to offer when mapping a missing one.
+    seen: set[str] = field(default_factory=set)
 
     def count(self, status: str) -> int:
         return sum(1 for r in self.rules if r.status == status)
@@ -193,4 +197,39 @@ def measure(
         except (RuleError, UnsupportedRule) as exc:
             result.skipped.append((item, str(exc)))
     result.sampled = sampled
+    result.seen = set().union(*seen_by_table.values()) if seen_by_table else set()
     return result
+
+
+def of_files(
+    rules: Collection,
+    logs: list[str],
+    size: int,
+    target: Target,
+    warn: Callable[[str], None] | None = None,
+) -> Coverage:
+    con = connect()
+    warnings: list[str] = []
+    load_logs(con, logs, warnings)
+    for warning in warnings:
+        if warn:
+            warn(warning)
+    routes = tuple(replace(r, table=None) for r in target.routes)
+    target = replace(target, dialect="duckdb", table=TABLE, json_column=COLUMN, routes=routes)
+
+    def sample(_: str) -> list[dict[str, Any]]:
+        query = f"SELECT CAST({COLUMN} AS VARCHAR) FROM {TABLE} LIMIT {size}"
+        return [json.loads(row[0]) for row in con.execute(query).fetchall()]
+
+    return measure(rules, target, sample, keywords=True)
+
+
+def of_database(rules: Collection, db: database.Database, size: int, target: Target) -> Coverage:
+    target = replace(target, dialect=db.dialect)
+
+    def sample(table: str) -> list[dict[str, Any]]:
+        rows = db.rows(f"SELECT * FROM {quote_table(table)} LIMIT {size}")
+        found = [database.document(row, target.json_column) for row in rows]
+        return [row for row in found if isinstance(row, dict)]
+
+    return measure(rules, target, sample, bool(target.json_column or target.keyword_column))

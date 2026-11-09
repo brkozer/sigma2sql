@@ -22,14 +22,13 @@ from sigma2sql.collection import Collection, rule_files
 from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.expr import regexes
-from sigma2sql.hunt import COLUMN, LEVELS, TABLE, Hit, Report, hunt, load_logs
-from sigma2sql.hunt import connect as open_logs
+from sigma2sql.hunt import LEVELS, Hit, Report, hunt, parse_since
 from sigma2sql.profile import apply_profile, builtin_profiles, load_placeholders, load_profile
 from sigma2sql.rule import Correlation, Document
 from sigma2sql.runner import matching_events, read_jsonl, rows
 from sigma2sql.runner import target as runner_target
 from sigma2sql.sarif import Finding, report
-from sigma2sql.sql import DIALECTS, Target, quote_table, to_query
+from sigma2sql.sql import DIALECTS, Target, to_query
 
 HTML_EXAMPLES = 5
 COVERAGE_FIELDS = 20
@@ -117,6 +116,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     cover.add_argument("--format", choices=("table", "json"), default="table")
     _field_options(cover)
 
+    serve_p = sub.add_parser("serve", help="open a page on this machine to run all of this")
+    serve_p.add_argument("rules", nargs="*", help="rule files or directories to start with")
+    serve_p.add_argument("--port", type=int, default=0, help="default: any free port")
+    serve_p.add_argument("--no-browser", action="store_true", help="only print the address")
+
     sub.add_parser("profiles", help="list the built-in profiles")
 
     args = parser.parse_args(argv)
@@ -128,6 +132,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         for name, description in builtin_profiles().items():
             print(f"{name:<16}{description}")
         return 0
+    if args.command == "serve":
+        from sigma2sql.web import serve
+
+        return serve(args.rules, args.port, not args.no_browser)
     try:
         target = _target(args)
     except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -149,18 +157,6 @@ def _positive(text: str) -> int:
     if value < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
     return value
-
-
-def _since(text: str) -> float:
-    match = re.fullmatch(r"(\d+)([smhdw])", text.strip())
-    if match:
-        seconds = int(match[1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[match[2]]
-        return datetime.now(UTC).timestamp() - seconds
-    try:
-        when = datetime.fromisoformat(text.strip())
-    except ValueError as exc:
-        raise ValueError(f"--since: expected 7d, 12h, 30m or a date, not {text!r}") from exc
-    return (when if when.tzinfo else when.replace(tzinfo=UTC)).timestamp()
 
 
 def _count(text: str) -> int:
@@ -212,7 +208,7 @@ def _target(args: argparse.Namespace) -> Target:
     if args.nested:
         target = replace(target, nested=True)
     if getattr(args, "since", None):
-        target = replace(target, since=_since(args.since))
+        target = replace(target, since=parse_since(args.since))
     if args.timestamp_field:
         target = replace(target, timestamp=args.timestamp_field)
     if args.timestamp_format:
@@ -515,11 +511,17 @@ def _coverage(args: argparse.Namespace, target: Target) -> int:
     _report_errors(col)
     try:
         if args.logs:
-            result = _coverage_of_files(col, args, target)
+            result = coverage.of_files(
+                col,
+                args.logs,
+                args.sample,
+                target,
+                lambda text: print(f"warning: {text}", file=sys.stderr),
+            )
         else:
             db = database.connect(dsn, args.timeout)
             try:
-                result = _coverage_of_database(col, db, args, target)
+                result = coverage.of_database(col, db, args.sample, target)
             finally:
                 db.close()
     except Exception as exc:  # the drivers raise their own error types
@@ -535,38 +537,6 @@ def _coverage(args: argparse.Namespace, target: Target) -> int:
     else:
         _print_coverage(result)
     return 0
-
-
-def _coverage_of_files(
-    col: Collection, args: argparse.Namespace, target: Target
-) -> coverage.Coverage:
-    con = open_logs()
-    warnings: list[str] = []
-    load_logs(con, args.logs, warnings)
-    for warning in warnings:
-        print(f"warning: {warning}", file=sys.stderr)
-    routes = tuple(replace(r, table=None) for r in target.routes)
-    target = replace(target, dialect="duckdb", table=TABLE, json_column=COLUMN, routes=routes)
-
-    def sample(_: str) -> list[dict[str, Any]]:
-        query = f"SELECT CAST({COLUMN} AS VARCHAR) FROM {TABLE} LIMIT {args.sample}"
-        return [json.loads(row[0]) for row in con.execute(query).fetchall()]
-
-    return coverage.measure(col, target, sample, keywords=True)
-
-
-def _coverage_of_database(
-    col: Collection, db: database.Database, args: argparse.Namespace, target: Target
-) -> coverage.Coverage:
-    target = replace(target, dialect=db.dialect)
-
-    def sample(table: str) -> list[dict[str, Any]]:
-        rows = db.rows(f"SELECT * FROM {quote_table(table)} LIMIT {args.sample}")
-        found = [database.document(row, target.json_column) for row in rows]
-        return [row for row in found if isinstance(row, dict)]
-
-    keywords = bool(target.json_column or target.keyword_column)
-    return coverage.measure(col, target, sample, keywords)
 
 
 def _coverage_json(result: coverage.Coverage) -> dict[str, object]:
