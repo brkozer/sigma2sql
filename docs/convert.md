@@ -33,10 +33,10 @@ sigma2sql convert [options] PATH [PATH ...]
 | `--timestamp-field NAME` | `timestamp` | event time field for [correlations](correlations.md) |
 | `--timestamp-format FMT` | `iso` | `iso`, `epoch_s` or `epoch_ms` |
 
-Settings are applied in this order: defaults, then the profile, then the options above. Two
-cases differ. A table named by a profile's `logsources` entry wins over `-t` for the rules it
-matches, and a profile that sets `json_column` wins over `--json-column`. None of the built-in
-profiles sets `json_column`.
+Settings are applied in this order: defaults, then the profile, then the options above, so
+`--json-column` wins over a profile that sets `json_column`. None of the built-in profiles sets
+it. One case differs: a table named by a profile's `logsources` entry wins over `-t` for the
+rules it matches.
 
 ## Columns or a JSON column
 

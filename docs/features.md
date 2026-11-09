@@ -28,7 +28,8 @@ percentiles, the aggregate `sigma_percentile(value, fraction)` yourself.
 ² PostgreSQL rejects repetition counts above 255; those rules are reported as unsupported
 rather than silently changed. Without `s` or `m`, `.` still matches a newline there. Values
 such as `-` in an address or number field are skipped with `pg_input_is_valid`, so `cidr`,
-comparisons and correlations need PostgreSQL 16 or newer.
+comparisons and correlations need PostgreSQL 16 or newer. `\b` and `\B` in a pattern are
+written as PostgreSQL's `\y` and `\Y`.
 
 ³ RE2: no lookaround or backreferences; such rules are reported as unsupported. Repetition
 counts above 1000 are reported too.
@@ -38,6 +39,7 @@ counts above 1000 are reported too.
 ⁵ Tested on ClickHouse 25.8. Correlations with `group-by` need `IS NOT DISTINCT FROM` in
 `JOIN ON`. One SigmaHQ rule, a list of driver hashes, is larger than the default
 `max_query_size` of 256 KiB and needs that setting raised.
+`hunt` in a database raises it, except for a user restricted with `readonly = 1`.
 
 The correlation types and how their windows work are on the
 [correlations page](correlations.md).
@@ -149,8 +151,8 @@ A rule's number is compared as text in a JSON column, so `EventID: 4624` matches
 
 A string in a rule is different. On PostgreSQL, DuckDB and ClickHouse JSON values are read as
 text, so the string matches a stored number too. SQLite keeps the JSON type, and a plain string
-only matches a string. `true` and `false` in a rule are strings as well, with the same result
-on SQLite:
+only matches a string. `true` and `false` in a rule are strings as well, but on SQLite they
+also equal a JSON `true` and `false`:
 
 | Rule | Event | SQLite (`test`, `check`) | DuckDB (`hunt`) |
 | --- | --- | --- | --- |
@@ -158,7 +160,7 @@ on SQLite:
 | `EventID: 4624` | `{"EventID": "4624"}` | match | match |
 | `EventID: '4624'` | `{"EventID": 4624}` | no match | match |
 | `EventID: '4624'` | `{"EventID": "4624"}` | match | match |
-| `Enabled: true` | `{"Enabled": true}` | no match | match |
+| `Enabled: true` | `{"Enabled": true}` | match | match |
 | `Enabled: true` | `{"Enabled": "true"}` | match | match |
 | `EventID|contains: '62'` | `{"EventID": 4624}` | match | match |
 

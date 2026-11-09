@@ -8,9 +8,10 @@ hide: [navigation]
 Run [Sigma](https://sigmahq.io) detection rules as SQL on SQLite, PostgreSQL, DuckDB and
 ClickHouse.
 
-sigma2sql does three jobs. It hunts through log files, `.evtx` included, without a SIEM. It
-converts rules for the database your logs already live in. It tests rules against example
-events before they reach production. Correlations become SQL too.
+sigma2sql does three jobs. It hunts through log files, `.evtx` included, without a SIEM, or
+in a database over a read-only connection. It converts rules for the database your logs
+already live in. It tests rules against example events before they reach production.
+Correlations become SQL too.
 
 ![sigma2sql hunting through sample logs, checking rule tests and converting a rule to PostgreSQL](demo.svg)
 
@@ -18,6 +19,8 @@ events before they reach production. Correlations become SQL too.
 
 - **[Quick start](quickstart.md)**: install it, then run a first hunt, convert and rule test.
 - **[Hunt through log files](hunt.md)**: log formats, `.evtx`, HTML reports and exit codes.
+- **[Hunt in a database](database.md)**: rules on PostgreSQL, ClickHouse, SQLite or DuckDB,
+  read-only.
 - **[Convert rules](convert.md)**: SQL for your database, your table and your columns.
 - **[Profiles](profiles.md)**: map Sigma fields to your schema and limit rules by log source.
 - **[Test rules](testing.md)**: example events next to each rule, and a GitHub Action.
@@ -79,8 +82,8 @@ in CI each week.
   [Supported features](features.md).
 - A rule that cannot be converted is skipped and named on stderr. A few modifier combinations
   are [ignored without a report](features.md#how-it-is-reported).
-- `hunt` uses DuckDB, so RE2 applies there: patterns with lookaround or backreferences are
-  skipped.
+- `hunt` over files uses DuckDB, so RE2 applies there: patterns with lookaround or
+  backreferences are skipped.
 
 sigma2sql is MIT licensed. The source is at
 [github.com/brkozer/sigma2sql](https://github.com/brkozer/sigma2sql).

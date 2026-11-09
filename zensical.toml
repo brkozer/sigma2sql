@@ -11,6 +11,7 @@ nav = [
   { "Quick start" = "quickstart.md" },
   { "Using sigma2sql" = [
     { "Hunt through log files" = "hunt.md" },
+    { "Hunt in a database" = "database.md" },
     { "Convert rules" = "convert.md" },
     { "Correlations" = "correlations.md" },
     { "Placeholders" = "placeholders.md" },

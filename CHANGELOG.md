@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 (2026-11-09)
+
+- `hunt` runs directly in a database. Set `SIGMA2SQL_DSN` to a PostgreSQL, ClickHouse, SQLite or
+  DuckDB address and leave out `--logs`. The connection is read-only, each query has a time
+  limit (`--timeout`), and the report never shows the password.
+- `hunt --since 7d` or `--since 2026-11-01` looks only at recent events.
+- Fix: on PostgreSQL `\b` in a regular expression meant backspace, so such rules never matched.
+- Fix: on SQLite a JSON `true` or `false` did not equal the word in a rule.
+- Fix: on SQLite a column that does not exist was read as text and could match.
+- Fix: long tactic names no longer leave their cell in the HTML report.
+- A `--json-column` option now wins over the profile, as the other options do.
+
 ## 0.4.0 (2026-11-09)
 
 - `hunt --html FILE` writes a report as one HTML file: matches by level, the rule's description,

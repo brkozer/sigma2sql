@@ -20,12 +20,13 @@ The extras add what `hunt` needs. Leave them out if you do not use it.
 | `sigma2sql` | `convert`, `test`, `check` and `profiles`; the only dependency is PyYAML |
 | `sigma2sql[duckdb]` | also `hunt` over JSON, Parquet and CSV files |
 | `sigma2sql[duckdb,evtx]` | also `hunt` over `.evtx` files |
+| `sigma2sql[postgres]` | also `hunt` in a PostgreSQL database, see [Hunt in a database](database.md) |
 
 Check the install:
 
 ```console
 $ sigma2sql --version
-sigma2sql 0.4.0
+sigma2sql 0.5.0
 ```
 
 The example rules and events are in the repository, not in the package:

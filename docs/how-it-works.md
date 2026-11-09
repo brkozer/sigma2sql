@@ -33,7 +33,7 @@ flowchart LR
 4. **Render.** The tree is walked once with a `Target`, which holds the dialect, the table, the
    field mapping and the profile's log source routes. The result is a `WHERE` clause.
 5. **Run.** `convert` prints the query. `test` and `check` run it on an in-memory SQLite
-   database, and `hunt` on an in-memory DuckDB database.
+   database, and `hunt` on an in-memory DuckDB database or on your own database.
 
 The tree for a small rule, and the SQL it renders to:
 
@@ -76,6 +76,7 @@ All code is in `src/sigma2sql/`.
 | `profiles/` | The built-in profiles: `sysmon`, `evtx`, `ecs-winlogbeat` and `ocsf`. |
 | `runner.py` | In-memory SQLite for `test` and `check`, with `regexp`, `cidr_match` and `sigma_percentile`. |
 | `hunt.py` | In-memory DuckDB for `hunt`: reads logs, handles damaged EVTX files, runs each rule and ranks the hits. |
+| `database.py` | `hunt` on a database: the read-only connections, the time limit and the address without its password. |
 | `sarif.py` | SARIF 2.1.0 reports. |
 | `html_report.py` | The `hunt --html` page. |
 | `cli.py` | Argument parsing, the order of defaults, profile and options, output and exit codes. |
@@ -176,6 +177,8 @@ In a plain column a number is compared as a number, `"EventID" = 4624`. JSON may
 This applies to numbers written as numbers in the rule. A value quoted in the rule, `'4624'`,
 is text. On SQLite `json_extract` keeps the JSON type, so such a value matches `"4624"` in an
 event but not `4624`. On the other three databases the field is read as text and both match.
+The words `true` and `false` are handled on SQLite with `json_type`, so they equal a JSON `true`
+and `false` as they do elsewhere.
 
 In a plain column, comparisons with `lt`, `lte`, `gt` and `gte` are direct: `"Port" < 1024`. In
 a JSON column they need a number from a field that may hold anything. Windows logs write `-` in
@@ -212,6 +215,15 @@ engine has its own limits, and a pattern over a limit is reported as unsupported
 - RE2 has no lookaround or backreferences.
 - Repetition counts such as `{300}` may be at most 255 on PostgreSQL and 1000 on DuckDB and
   ClickHouse. SQLite has no such limit.
+
+PostgreSQL reads `\b` as a backspace. Its word boundary is `\y`, and `\B` is `\Y`, so those are
+written instead, outside a character class. `word.yml` has `CommandLine|re: '\bmimikatz\b'`:
+
+```console
+$ sigma2sql convert word.yml -d postgres --json-column data
+-- Mimikatz as a word
+SELECT * FROM "events" WHERE "data"->>'CommandLine' ~ '\ymimikatz\y';
+```
 
 The flags need translating in two places:
 

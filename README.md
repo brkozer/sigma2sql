@@ -7,8 +7,9 @@
 
 Run [Sigma](https://sigmahq.io) detection rules as SQL on **SQLite**, **PostgreSQL**,
 **DuckDB** and **ClickHouse**: hunt through log files, `.evtx` included, without a SIEM,
-convert rules for the database your logs already live in, and unit-test rules before they
-reach production. Full documentation: [brkozer.github.io/sigma2sql](https://brkozer.github.io/sigma2sql/).
+hunt in the database your logs already live in over a read-only connection, convert rules
+for that database, and unit-test rules before they reach production. Full documentation:
+[brkozer.github.io/sigma2sql](https://brkozer.github.io/sigma2sql/).
 
 - **All of SigmaHQ converts**: the 3807 rules in its five rule folders on SQLite, DuckDB and
   ClickHouse, 3804 on PostgreSQL, plus all 45 `count()` aggregation rules SigmaHQ keeps under
@@ -34,8 +35,9 @@ pip install "sigma2sql[duckdb,evtx]"
 uv tool install "sigma2sql[duckdb,evtx]"
 ```
 
-The `duckdb` extra is needed for `hunt` and `evtx` for reading `.evtx` files; `convert`, `test`
-and `check` only need PyYAML.
+The `duckdb` extra is needed for `hunt` over files and `evtx` for reading `.evtx` files;
+`convert`, `test` and `check` only need PyYAML. To hunt in a PostgreSQL database, install
+`sigma2sql[postgres]`.
 
 ## Hunt through log files
 
@@ -73,6 +75,21 @@ run rules for `product: windows`, so a directory of all SigmaHQ rules can be use
 the rest are counted on stderr. Logs from an incident are
 often damaged, so everything readable is kept and the rest is reported: a cut-off file or a
 bad chunk gives a warning, and only a hunt that could read no event at all is an error.
+
+## Hunt in a database
+
+Without `--logs`, `hunt` connects to the database in the `SIGMA2SQL_DSN` environment
+variable and runs the rules there:
+
+```bash
+export SIGMA2SQL_DSN='postgresql://reader@db.example:5432/logs'   # or clickhouse://, sqlite:, duckdb:
+sigma2sql hunt sigma/rules -t events --json-column event --since 7d
+```
+
+The connection refuses writes and each query on a server has a time limit, but a database
+user with only `SELECT` is still the right setup. A ClickHouse user restricted with
+`readonly = 1` works too, without that time limit. Every rule is at least one query, so mind
+the cost on large tables. See [Hunt in a database](docs/database.md).
 
 ## Convert rules
 
@@ -230,7 +247,7 @@ files exits with code 2, also next to a good path.
 The same check as a GitHub Action:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.4.0
+- uses: brkozer/sigma2sql@v0.5.0
   with:
     path: rules
     profile: sysmon          # optional
@@ -264,12 +281,14 @@ percentiles, the aggregate `sigma_percentile(value, fraction)` yourself
 ² PostgreSQL rejects repetition counts above 255; those three rules are reported as
 unsupported rather than silently changed. Without `s` or `m`, `.` still matches a newline
 there. Values such as `-` in an address or number field are skipped with `pg_input_is_valid`,
-so `cidr`, comparisons and correlations need PostgreSQL 16 or newer.<br>
+so `cidr`, comparisons and correlations need PostgreSQL 16 or newer. `\b` and `\B` in a
+pattern are written as PostgreSQL's `\y` and `\Y`.<br>
 ³ RE2: no lookaround or backreferences; such rules are reported as unsupported.<br>
 ⁴ Without `--json-column`, a missing value is only NULL in `Nullable` columns.<br>
 ⁵ Tested on ClickHouse 25.8. Correlations with `group-by` need `IS NOT DISTINCT FROM` in
 `JOIN ON`. One SigmaHQ rule, a list of driver hashes, is larger than the default
 `max_query_size` of 256 KiB and needs that setting raised.
+`hunt` in a database raises it, except for a user restricted with `readonly = 1`.
 
 Matching is case-insensitive by default (ASCII in SQLite, as its `LIKE` and `NOCASE` are); a
 number in a rule matches a value in a JSON column whether it is stored as `4624` or `"4624"`,

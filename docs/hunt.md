@@ -4,7 +4,7 @@
 in-memory DuckDB database, runs every rule and correlation as SQL, and lists the ones that
 matched, most severe first. Most examples here use `examples/` from the repository. The others
 run in a scratch folder with small log files in `logs/` and copies of the example rules in
-`more/`.
+`more/`. To run rules where the logs already are, see [Hunt in a database](database.md).
 
 ```console
 $ sigma2sql hunt examples/rules --logs examples/events.jsonl
@@ -102,8 +102,9 @@ layouts:
 | `--nested` | dotted names are paths into nested JSON |
 | `--timestamp-field`, `--timestamp-format` | event time for [correlations](#correlations) |
 
-Keyword rules search [the JSON text](features.md#keywords) of the whole event. `hunt` has no
-`--dialect` or `--table`, as it always runs on its own DuckDB table.
+Keyword rules search [the JSON text](features.md#keywords) of the whole event. With `--logs`,
+`hunt` has no `--dialect` and refuses `--table`, `--json-column` and `--keyword-column`, as it
+always runs on its own DuckDB table.
 
 ## Reading the output
 
@@ -242,7 +243,8 @@ $ grep -c '<script' hits.html
 
 The page holds:
 
-- the time it was written and the log paths, folded if there are more than five
+- the time it was written and the log paths, folded if there are more than five, or the
+  [database address](database.md#what-appears-in-reports) without its password
 - the number of events read and of rules run, matched, skipped and left out for other log
   sources
 - one row per matching rule, most severe first, with its level, hits, title and ATT&CK technique
@@ -402,6 +404,31 @@ The profile's logsource conditions still apply within the run. For example, unde
 `process_creation` rule only sees Sysmon events with ID 1. A `table` set in a profile's
 logsource is ignored, as all logs share one table here. [Profiles](profiles.md#product-scoping)
 has a worked example.
+
+## Recent events only
+
+`--since` runs the rules only on events from a moment on. It takes an age such as `30m`, `12h`
+or `7d`, or an ISO 8601 date or time, read as UTC if it has no zone. The event time comes from
+the same place as [for correlations](#correlations), and events with no readable time are left
+out. Only 4 of the 12 example events have a time, all on 1 November, which leaves the brute
+force rule:
+
+```console
+$ sigma2sql hunt examples/rules --logs examples/events.jsonl --since 2026-11-01
+LEVEL         HITS  RULE
+high             1  Brute force against one account  (examples/rules/brute_force.yml)
+1 of 4 rules matched 12 events (0 rules skipped)
+```
+
+The summary still counts every event loaded, unlike a [hunt in a database](database.md#-since),
+where it counts the events since that moment. A time field that no event has leaves every rule
+without a match and gives no warning here, where a database hunt stops with code 2:
+
+```console
+$ sigma2sql hunt examples/rules --logs examples/events.jsonl --since 2026-11-01 --timestamp-field EventTime; echo $?
+0 of 4 rules matched 12 events (0 rules skipped)
+0
+```
 
 ## Correlations
 

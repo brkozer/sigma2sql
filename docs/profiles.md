@@ -34,9 +34,10 @@ sysmon          Sysmon events with their original field names; each Sigma catego
 | `ecs-winlogbeat` | nested | `@timestamp` | `windows` | `winlog.event_data.{field}` |
 | `ocsf` | nested | `time`, epoch milliseconds | none | none |
 
-No built-in profile names a JSON column, because that depends on your table. `hunt`, `test` and
-`check` have their own, but `convert` needs `--json-column` with the nested profiles. Without
-it a dotted path becomes one column name, which is rarely what you want. `reg.yml` is shown
+No built-in profile names a JSON column, because that depends on your table. `hunt` over
+files, `test` and `check` have their own, but `convert` and [`hunt` in a
+database](database.md) need `--json-column` with the nested profiles. Without it a dotted path
+becomes one column name, which is rarely what you want. `reg.yml` is shown
 [below](#field-lookup):
 
 ```console
@@ -206,7 +207,7 @@ every rule with this profile.
 ```yaml
 # acme.yml
 description: Our Windows events
-json_column: event                       # used by convert only
+json_column: event                       # for convert and hunt in a database
 nested: true                             # dotted names are paths into nested JSON
 timestamp: ts                            # event time for correlations
 timestamp_format: epoch_s                # iso (default), epoch_s or epoch_ms
@@ -216,7 +217,7 @@ fields:
   Image: [proc.path, proc.image]         # first one present wins
 logsources:
   - match: {product: windows, category: registry_set}
-    table: registry_events               # used by convert only
+    table: registry_events               # for convert and hunt in a database
     where: {kind: set}
   - match: {product: windows}
     where: {source|startswith: win}
@@ -375,8 +376,9 @@ Each `logsources` entry has a `match` map and can have a `table` and a `where`.
 - **`where`** is a Sigma search map, added to the rule with `AND`. It can use lists (any of the
   values) and modifiers. Its keys are your own field names, as they are in the event: neither
   `fields`, `default_field` nor `-m` applies to them. `nested` and the JSON column do.
-- **`table`** sends the rule to another table. Only `convert` uses it, since `hunt`, `test` and
-  `check` keep all events in one table. They still apply `where`.
+- **`table`** sends the rule to another table. `convert` and [`hunt` in a
+  database](database.md) use it. `hunt` over files, `test` and `check` keep all events in one
+  table, and still apply `where`.
 - **A rule that no entry matches** runs on the default table with no extra condition.
 
 In `acme.yml`, `reg.yml` took the first entry: table `registry_events` and `kind = 'set'`. A
@@ -423,9 +425,9 @@ Only `hunt` scopes by product. `convert`, `test` and `check` take the rules you 
 | Field names | `-m` over `fields` |
 | Event time | `--timestamp-field` and `--timestamp-format` over the profile |
 | `nested` | On if either the profile or `--nested` says so; there is no option to turn it off |
-| JSON column on `convert` | The profile's `json_column` over `--json-column` |
-| Table on `convert` | A log source's `table` over `-t` |
-| Table and JSON column on `hunt`, `test`, `check` | Their own, whatever the profile says |
+| JSON column on `convert` and `hunt` in a database | `--json-column` over the profile's `json_column` |
+| Table on `convert` and `hunt` in a database | A log source's `table` over `-t` |
+| Table and JSON column on `hunt` over files, `test`, `check` | Their own, whatever the profile says |
 
 ## Errors
 

@@ -21,7 +21,7 @@ options:
   -h, --help            show this help message and exit
   --version             show program's version number and exit
 $ sigma2sql --version
-sigma2sql 0.4.0
+sigma2sql 0.5.0
 ```
 
 Results go to stdout. Skipped rules, warnings and summary lines go to stderr, so a command can
@@ -40,7 +40,7 @@ The exit codes of all commands are collected in [Exit codes](#exit-codes).
 | `-m, --mapping FILE` | none | YAML map of Sigma field to column or key, applied over the profile |
 | `--placeholders FILE` | none | YAML map of `%name%` placeholder to a value or a list of values, see [Placeholders](placeholders.md) |
 | `--nested` | off | dotted names are paths into nested JSON, not keys with a dot in them |
-| `--timestamp-field NAME` | `timestamp` | event time, used by correlations and `count()` rules |
+| `--timestamp-field NAME` | `timestamp` | event time, used by correlations, `count()` rules and `--since` |
 | `--timestamp-format FORMAT` | `iso` | `iso`, `epoch_s` or `epoch_ms` |
 
 Settings are applied in this order: the built-in defaults, the profile, then the options on the
@@ -48,7 +48,7 @@ command line. Three details:
 
 - `--mapping` wins over the profile field by field. Each value must be a single string; a list
   of candidates ("first one present wins") is only possible in a profile.
-- `json_column` in a profile wins over `--json-column`. None of the built-in profiles set it.
+- `--json-column` wins over `json_column` in a profile. None of the built-in profiles set it.
 - A `table` in a profile's `logsources` entry wins over `-t` for the rules that entry matches.
 
 The time modifiers (`minute`, `hour` and so on) read the field named in the rule, not
@@ -197,13 +197,16 @@ sigma2sql: line 1: each event must be a JSON object
 
 ## hunt
 
-Run rules and correlations over log files with an in-memory DuckDB database, and list the ones
-that matched. Needs the `duckdb` extra, and the `evtx` extra for `.evtx` files. See [Hunt
-through log files](hunt.md) for a walk-through.
+Run rules and correlations and list the ones that matched. With `--logs`, the files are read
+into an in-memory DuckDB database, which needs the `duckdb` extra, and the `evtx` extra for
+`.evtx` files. See [Hunt through log files](hunt.md) for a walk-through. Without `--logs`, the
+rules run in the database named by the `SIGMA2SQL_DSN` environment variable, over a read-only
+connection. See [Hunt in a database](database.md).
 
 ```text
-usage: sigma2sql hunt [-h] -l LOGS [LOGS ...] [-e EXAMPLES] [--format {table,json}]
-                      [--sarif SARIF] [--html HTML]
+usage: sigma2sql hunt [-h] [-l LOGS [LOGS ...]] [-e EXAMPLES] [--format {table,json}]
+                      [--sarif SARIF] [--html HTML] [-t TABLE] [--json-column JSON_COLUMN]
+                      [--keyword-column KEYWORD_COLUMN] [--since SINCE] [--timeout TIMEOUT]
                       [--fail-on {critical,high,medium,low,informational}] [-p PROFILE]
                       [-m MAPPING] [--placeholders PLACEHOLDERS] [--nested]
                       [--timestamp-field TIMESTAMP_FIELD]
@@ -214,12 +217,17 @@ usage: sigma2sql hunt [-h] -l LOGS [LOGS ...] [-e EXAMPLES] [--format {table,jso
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `rules` | required | rule files or directories, one or more, filter files included |
-| `-l, --logs` | required | log files, one or more; globs such as `'logs/*.json'` |
+| `-l, --logs` | none | log files, one or more; globs such as `'logs/*.json'`; without it, the database in `SIGMA2SQL_DSN` |
 | `-e, --examples N` | `0` | show up to N matching events or correlation results per rule; a negative N is an error; without it, `--html` still puts up to five on the page |
 | `--format` | `table` | `table` or `json` |
 | `--sarif FILE` | none | also write the matches to this SARIF file |
 | `--html FILE` | none | also write a report to this HTML file, see [`--html`](hunt.md#-html) |
-| `--fail-on LEVEL` | none | exit 1 if a rule at this level or above matches: `critical`, `high`, `medium`, `low` or `informational` |
+| `-t, --table` | `events` | in a database: the table to read; dots separate schema and table |
+| `--json-column` | none | in a database: read fields from this JSON column; without it each field is a column |
+| `--keyword-column` | none | in a database: column searched by keyword rules |
+| `--since WHEN` | none | only events since `30m`, `12h`, `7d`, `2w` or an ISO 8601 date or time; events with no readable time are left out, and in a database a table where no row has one exits 2 |
+| `--timeout SECONDS` | `60` | time limit for each query on PostgreSQL and ClickHouse; not applied for a ClickHouse user with `readonly = 1`; no effect on SQLite, DuckDB or log files |
+| `--fail-on LEVEL` | none | exit 1 if a rule at this level or above matches: `critical`, `high`, `medium`, `low` or `informational`; exit 2 if none did and a rule reached `--timeout` |
 
 The [shared options](#options-shared-by-the-rule-commands) apply too. `--logs` takes any number
 of values, so write the rule paths before it. Quote globs so that they are expanded by
@@ -235,8 +243,9 @@ The file suffix picks the reader, in upper or lower case:
 | `.evtx` | Windows event log, in the layout of `evtx_dump` |
 
 Any other suffix is an error. All logs of a hunt go into one table, with each event stored as
-JSON. Because of that a profile's `table` is ignored in `hunt`; its `where` conditions still
-apply.
+JSON. Because of that a profile's `table` is ignored in a hunt over files; its `where`
+conditions still apply. `--table`, `--json-column` and `--keyword-column` cannot be combined
+with `--logs`, and `SIGMA2SQL_DSN` is not looked at then.
 
 If any path ends in `.evtx` and you pass no `--profile`, the `evtx` profile is used for the
 whole hunt. If other logs are among the paths, `hunt` warns with `all logs are read with the
@@ -258,7 +267,8 @@ medium           1  Successful RDP logon from a public address  (examples/rules/
 Rules are sorted by level, then by hits, highest first, then by title. A rule without a level
 shows `-` and comes last. `HITS` counts matching events, or result rows for a correlation. If
 nothing matched, no table is printed. In the summary on stderr, `12 events` is the number of
-events loaded, not the number that matched.
+events loaded. In a database it is the number in the table and in any table a profile routes
+to, counted from the `--since` moment if one is given. It is not the number that matched.
 
 `--format json` prints one object per matching rule, with the examples parsed, or `[]` with no
 match. See [`--format json`](hunt.md#-format-json) for an example.
@@ -278,9 +288,11 @@ $ sigma2sql hunt keyword.yml --logs examples/events.jsonl -p sysmon
 
 ### Skipped rules and damaged logs
 
-A rule that cannot be converted, or that DuckDB rejects, is named on stderr and the hunt goes
-on. Skipped rules do not change the exit code as long as one rule ran, so a CI job that depends
-on `hunt` should watch that count as well.
+A rule that cannot be converted, that the database rejects or that reaches `--timeout` is
+named on stderr and the hunt goes on. Skipped rules do not change the exit code as long as one
+rule ran, so a CI job that depends on `hunt` should watch that count as well. The exception is
+a rule that reached `--timeout` when `--fail-on` is set, see
+[`--timeout`](database.md#-timeout).
 
 ```console
 $ sigma2sql hunt bad.yml examples/rules/rdp_from_outside.yml --logs examples/events.jsonl
@@ -303,7 +315,8 @@ sigma2sql: no rule could run
 Logs from an incident are often damaged, so `.evtx` files are read as far as possible, with a
 warning for what is lost. If that leaves the whole hunt with no event at all, it ends with exit
 code 2. See [Damaged files](hunt.md#damaged-files). Other log formats are read by DuckDB, and a
-file it cannot read ends the hunt with exit code 2.
+file it cannot read ends the hunt with exit code 2. So does a database connection that is lost
+during the hunt.
 
 ### Fail levels and SARIF
 
@@ -328,7 +341,8 @@ exit code 2.
 
 `--html FILE` writes one page with the matches, their rule details and examples, the
 warnings and the skipped rules. The page needs no network and runs no script. It shows up to
-five examples per rule unless `-e` is given. See [`--html`](hunt.md#-html). A file that cannot be written gives exit code 2.
+five examples per rule unless `-e` is given. See [`--html`](hunt.md#-html). A file that
+cannot be written gives exit code 2.
 
 ## check
 
@@ -437,8 +451,8 @@ sysmon          Sysmon events with their original field names; each Sigma catego
 | Code | `convert` | `test` | `hunt` | `check` |
 | --- | --- | --- | --- | --- |
 | 0 | every rule converted | ran; with `--expect`, the expectation held | ran; nothing reached `--fail-on` | every rule loaded and every tested rule passed |
-| 1 | a rule or file was skipped | `--expect` did not hold | a rule reached `--fail-on`, or the `duckdb` or `evtx` package is missing | a rule failed, could not be loaded or converted, or has no tests with `--require-tests` |
-| 2 | no rules found, also when the paths hold only filters | no rules found, the rule or events could not be read, converted or run, or a regular expression is invalid | no rules found, no rule could run, a log could not be read, damaged `.evtx` files gave no event at all, or the `--sarif` or `--html` file could not be written | no rules found, or the `--sarif` file could not be written |
+| 1 | a rule or file was skipped | `--expect` did not hold | a rule reached `--fail-on`, or the `duckdb`, `evtx` or `psycopg` package is missing | a rule failed, could not be loaded or converted, or has no tests with `--require-tests` |
+| 2 | no rules found, also when the paths hold only filters | no rules found, the rule or events could not be read, converted or run, or a regular expression is invalid | no rules found, no rule could run, a log or the database could not be read, the database connection was lost, `--since` found no readable time in a database, a rule reached `--timeout` with `--fail-on` set and nothing matched at that level, damaged `.evtx` files gave no event at all, neither `--logs` nor `SIGMA2SQL_DSN` was given, or the `--sarif` or `--html` file could not be written | no rules found, or the `--sarif` file could not be written |
 
 For all four commands, code 2 also covers bad usage and a profile, mapping or placeholders file
 that cannot be loaded. For `test`, `hunt` and `check`, "no rules found" means a rule path that

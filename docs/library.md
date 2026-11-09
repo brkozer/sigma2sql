@@ -120,6 +120,8 @@ to change a copy.
 | `routes` | `()` | log source routing, normally set by a profile |
 | `product` | `None` | `logsource.product` the logs hold; only `hunt` uses it |
 | `placeholders` | `{}` | placeholder name to a tuple of values |
+| `since` | `None` | only events from this moment on, in seconds since 1970 |
+| `lenient_json` | `False` | a row that is not valid JSON is read as an event with no fields instead of ending the query; SQLite and DuckDB only |
 
 `to_query(rule, target, columns="*")` returns one `SELECT`, without a closing semicolon. Use
 `columns` to choose what it selects. For a rule with a legacy `count()` aggregation, `columns`
@@ -267,7 +269,8 @@ print(to_query(rule, target))
 SELECT * FROM "process_events" WHERE (LOWER("doc"#>>'{"event","code"}') = '1' AND "doc"#>>'{"process","executable"}' ILIKE '%\\cmd.exe' ESCAPE '\')
 ```
 
-Fields already in `target.mapping` win over the profile's:
+Fields already in `target.mapping` win over the profile's, and a `json_column` already on the
+target wins over the profile's too:
 
 ```python
 from sigma2sql import Target
@@ -363,6 +366,9 @@ returns a connection that has them:
 | `cidr_match(value, network)` | the `cidr` modifier | Python's `ipaddress`; false for text that is not an address |
 | `sigma_percentile(value, fraction)` | `value_median` and `value_percentile` | aggregate with linear interpolation, as PostgreSQL's `percentile_cont`; NULL values are left out |
 
+It also makes SQLite refuse a double-quoted name that is not a column. On a connection you open
+yourself, SQLite reads such a name as text, so a rule on a missing column can match.
+
 ```python
 from sigma2sql.runner import connect
 
@@ -443,12 +449,13 @@ as `base`.
 
 | `Report` field | Meaning |
 | --- | --- |
-| `events` | events loaded |
+| `events` | events loaded, or in a database hunt the events counted in its tables |
 | `hits` | a `Hit` for each matching rule, most severe first |
 | `ran` | rules and correlations that ran |
 | `skipped` | `(rule, reason)` for each one that could not run |
 | `other_logs` | rules left out because they are for another product |
-| `warnings` | logs that could only be read in part, and rules whose examples could not be fetched |
+| `timed_out` | rules the database stopped at the time limit; these are also in `skipped` |
+| `warnings` | logs that could only be read in part, rules whose examples could not be fetched and, in a database hunt, tables that could not be counted in time or hold rows that are not valid JSON |
 
 A `Hit` has `rule`, `count`, `examples` (JSON strings) and `rank`, the position of its level in
 `sigma2sql.hunt.LEVELS`, or the length of that tuple for no level or any other level.
