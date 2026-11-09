@@ -279,7 +279,7 @@ def test_a_malformed_row_does_not_end_every_rule(
     assert hunt(tmp_path, address, monkeypatch) == 0
     out = capsys.readouterr()
     assert len(json.loads(out.out)) == 3
-    assert "1 rows are not valid JSON" in out.err
+    assert "1 rows are not valid JSON and have no fields" in out.err
 
 
 def test_a_missing_column_is_a_skip_on_sqlite(
@@ -361,3 +361,24 @@ def test_a_bad_address_is_a_message_not_a_traceback(
 def test_redirects_are_not_followed() -> None:
     handler = database._Refuse()
     assert handler.redirect_request() is None
+
+
+def test_a_missing_base_table_is_fine_when_rules_are_routed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    address = next(duckdb_db(tmp_path))
+    profile = tmp_path / "p.yml"
+    profile.write_text(f"logsources:\n  - match: {{product: windows}}\n    table: {TABLE}\n")
+    rules = tmp_path / "r.yml"
+    rules.write_text(
+        "title: t\nlogsource: {product: windows}\ndetection: {s: {EventID: 4624}, condition: s}\n"
+    )
+    monkeypatch.setenv(database.ENV, address)
+    args = ["-t", "absent", "--json-column", "event", "-p", str(profile), "--format", "json"]
+    assert main(["hunt", str(rules), *args]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["count"] == 1
+
+
+def test_clickhouse_errors_are_readable() -> None:
+    assert database._clickhouse_error('{"exception": "Code: 60. bad"}') == "Code: 60. bad"
+    assert database._clickhouse_error("Code: 60. plain") == "Code: 60. plain"

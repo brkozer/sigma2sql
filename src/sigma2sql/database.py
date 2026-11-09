@@ -70,6 +70,13 @@ class _Postgres:
         self.con.close()
 
 
+def _clickhouse_error(body: str) -> str:
+    try:
+        return str(json.loads(body)["exception"]).strip()
+    except (ValueError, KeyError, TypeError):
+        return body
+
+
 class _Refuse(urllib.request.HTTPRedirectHandler):
     """A redirect would carry the user's password to another address."""
 
@@ -121,7 +128,7 @@ class _ClickHouse:
             with _NO_REDIRECTS.open(request, timeout=self.timeout) as response:
                 text = response.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
-            detail = exc.read(400).decode("utf-8", "replace").strip()
+            detail = _clickhouse_error(exc.read(4000).decode("utf-8", "replace").strip())
             if "TIMEOUT_EXCEEDED" in detail or "Code: 159" in detail:
                 raise QueryTimeout(detail) from exc
             raise RuntimeError(detail or f"ClickHouse answered {exc.code}") from exc
@@ -264,9 +271,10 @@ def _count_events(target: Target, count: Callable[[str], int], warnings: list[st
             if target.since is None:
                 total += count(f"SELECT 1 AS x FROM {source}")
                 continue
-            total += count(f"SELECT 1 AS x FROM {source} WHERE {time} >= {target.since!r}")
+            recent = count(f"SELECT 1 AS x FROM {source} WHERE {time} >= {target.since!r}")
+            total += recent
             readable = f"SELECT 1 AS x FROM {source} WHERE {time} IS NOT NULL"
-            if not total and count(f"SELECT 1 AS x FROM {source}") and not count(readable):
+            if not recent and count(f"SELECT 1 AS x FROM {source}") and not count(readable):
                 raise ValueError(
                     f"--since: no row of {table} has a readable time in "
                     f"{target.timestamp}; set --timestamp-field or use a profile"
@@ -285,8 +293,10 @@ def _count_events(target: Target, count: Callable[[str], int], warnings: list[st
                 bad = count(
                     f"SELECT 1 AS x FROM {quote_table(table)} WHERE NOT json_valid({column})"
                 )
-            except (QueryTimeout, ValueError, RuntimeError, sqlite3.Error):
+            except ConnectionLost:
+                raise
+            except Exception:  # a missing route table is reported by the rules that use it
                 continue
             if bad:
-                warnings.append(f"{table}: {bad:,} rows are not valid JSON and cannot match")
+                warnings.append(f"{table}: {bad:,} rows are not valid JSON and have no fields")
     return total
