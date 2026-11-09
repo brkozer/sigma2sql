@@ -91,6 +91,18 @@ user with only `SELECT` is still the right setup. A ClickHouse user restricted w
 `readonly = 1` works too, without that time limit. Every rule is at least one query, so mind
 the cost on large tables. See [Hunt in a database](docs/database.md).
 
+## See which rules can match
+
+A rule that needs a field your logs do not have never fires, and nothing tells you. `coverage`
+reads a sample of your events and sorts your rules by whether they can match at all, then
+lists the missing fields that cost the most rules:
+
+```bash
+sigma2sql coverage sigma/rules --logs 'logs/*.evtx'
+```
+
+See [Rule coverage](https://brkozer.github.io/sigma2sql/coverage/).
+
 ## Convert rules
 
 ```console
@@ -247,7 +259,7 @@ files exits with code 2, also next to a good path.
 The same check as a GitHub Action:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.5.0
+- uses: brkozer/sigma2sql@v0.5.1
   with:
     path: rules
     profile: sysmon          # optional

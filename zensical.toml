@@ -12,6 +12,7 @@ nav = [
   { "Using sigma2sql" = [
     { "Hunt through log files" = "hunt.md" },
     { "Hunt in a database" = "database.md" },
+    { "Rule coverage" = "coverage.md" },
     { "Convert rules" = "convert.md" },
     { "Correlations" = "correlations.md" },
     { "Placeholders" = "placeholders.md" },

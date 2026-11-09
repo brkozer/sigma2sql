@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 (2026-11-10)
+
+- `coverage` shows which rules can match your logs at all, from a sample of events in files or
+  a database, and which missing fields cost the most rules.
+
 ## 0.5.0 (2026-11-09)
 
 - `hunt` runs directly in a database. Set `SIGMA2SQL_DSN` to a PostgreSQL, ClickHouse, SQLite or

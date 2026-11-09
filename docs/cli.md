@@ -21,7 +21,7 @@ options:
   -h, --help            show this help message and exit
   --version             show program's version number and exit
 $ sigma2sql --version
-sigma2sql 0.5.0
+sigma2sql 0.5.1
 ```
 
 Results go to stdout. Skipped rules, warnings and summary lines go to stderr, so a command can
