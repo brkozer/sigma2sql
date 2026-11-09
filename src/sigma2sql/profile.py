@@ -104,7 +104,7 @@ def apply_profile(target: Target, profile: dict[str, Any]) -> Target:
     return replace(
         target,
         mapping={**{str(k): _target_field(v) for k, v in fields.items()}, **target.mapping},
-        json_column=profile.get("json_column", target.json_column),
+        json_column=target.json_column or profile.get("json_column"),
         nested=bool(profile.get("nested", target.nested)),
         timestamp=str(profile.get("timestamp", target.timestamp)),
         timestamp_format=fmt,

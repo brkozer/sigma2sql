@@ -37,6 +37,18 @@ ESCAPED = [
 
 CASES: list[Case] = [
     (
+        "regex word boundaries work on every database",
+        "sel: {A|re: '\\bcmd\\b'}\ncondition: sel",
+        [{"A": "run cmd now"}, {"A": "runcmdnow"}],
+        [0],
+    ),
+    (
+        "a JSON boolean equals the word",
+        "sel: {A: 'true'}\ncondition: sel",
+        [{"A": True}, {"A": False}, {"A": "true"}],
+        [0, 2],
+    ),
+    (
         "keyword with a backslash finds the value",
         "keywords: ['C:\\Windows\\cmd.exe']\ncondition: keywords",
         ESCAPED,

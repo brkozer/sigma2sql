@@ -105,6 +105,9 @@ class Target:
     placeholders: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
     # Only events from this moment on, in seconds since 1970.
     since: float | None = None
+    # A row that is not valid JSON counts as no match instead of ending the query, for
+    # databases that accept anything in a text column.
+    lenient_json: bool = False
 
 
 def to_query(rule: Rule, target: Target, columns: str = "*") -> str:
@@ -172,7 +175,13 @@ class Renderer:
                 return f"NOT COALESCE({self.render(item)}, FALSE)"
             case StrMatch(f, _, cased):
                 col = self.keyword() if f is None else self.column(f)
-                return self.string(col, self.searched(expr), cased)
+                value = self.searched(expr)
+                if f is not None and self._is_boolean_text(value):
+                    # json_extract turns JSON true into 1, which `true` would never equal.
+                    kind = col.replace("json_extract(", "json_type(")
+                    words = "WHEN 'true' THEN 'true' WHEN 'false' THEN 'false'"
+                    col = f"CASE {kind} {words} ELSE {col} END"
+                return self.string(col, value, cased)
             case NumMatch(f, value):
                 col = self.column(f)
                 if not self.json:
@@ -269,7 +278,9 @@ class Renderer:
         path = self.lit("$" + "".join("." + p for p in parts))
         if self.d == "duckdb":
             # Parentheses: before DuckDB 2.0, `a AND b->>c = d` parses as `(a AND b)->>...`.
-            return f"({col}->>{path})"
+            return f"TRY({col}->>{path})" if self.t.lenient_json else f"({col}->>{path})"
+        if self.t.lenient_json:
+            return f"CASE WHEN json_valid({col}) THEN json_extract({col}, {path}) END"
         return f"json_extract({col}, {path})"
 
     def number(self, col: str) -> str:
@@ -344,6 +355,11 @@ class Renderer:
             return f"quantileExactInclusive({fraction})({expr})"
         return f"sigma_percentile({expr}, {fraction})"
 
+    def _is_boolean_text(self, value: SigmaString) -> bool:
+        if self.d != "sqlite" or not self.json or value.has_wildcards:
+            return False
+        return value.text.lower() in ("true", "false")
+
     def searched(self, item: StrMatch) -> SigmaString:
         """A keyword in JSON mode is looked for in the document's text, where `C:\\Windows` and
         a quote are escaped, so it has to be written the way that text holds it."""
@@ -388,7 +404,7 @@ class Renderer:
         if limit is not None and any(n > limit for n in bounds):
             raise UnsupportedRule(f"{self.d} regexes allow at most {limit} repetitions: {pattern}")
         if self.d == "postgres":
-            return f"{col} ~ {self.lit(_postgres_flags(flags) + pattern)}"
+            return f"{col} ~ {self.lit(_postgres_flags(flags) + _postgres_regex(pattern))}"
         if self.d in ("duckdb", "clickhouse") and RE2_UNSUPPORTED.search(pattern):
             raise UnsupportedRule(f"{self.d} (RE2) has no lookaround or backreferences: {pattern}")
         if self.d == "clickhouse":
@@ -454,6 +470,27 @@ def _clickhouse_number(text: str) -> str:
 
 def _uncased(item: Expr) -> TypeGuard[StrMatch]:
     return isinstance(item, StrMatch) and not item.cased
+
+
+def _postgres_regex(pattern: str) -> str:
+    """PostgreSQL reads `\\b` as a backspace; its word boundary is `\\y` (`\\B` is `\\Y`)."""
+    out: list[str] = []
+    in_set = False
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "\\" and i + 1 < len(pattern):
+            pair = pattern[i : i + 2]
+            out.append({"\\b": "\\y", "\\B": "\\Y"}.get(pair, pair) if not in_set else pair)
+            i += 2
+            continue
+        if char == "[" and not in_set:
+            in_set = True
+        elif char == "]" and in_set:
+            in_set = False
+        out.append(char)
+        i += 1
+    return "".join(out)
 
 
 def _postgres_flags(flags: str) -> str:

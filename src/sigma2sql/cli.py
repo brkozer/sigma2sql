@@ -78,7 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--timeout",
         type=_positive,
         default=database.DEFAULT_TIMEOUT,
-        help="seconds each rule may take on PostgreSQL or ClickHouse (default: %(default)s)",
+        help="seconds each query may take on PostgreSQL or ClickHouse (default: %(default)s)",
     )
     hunt_p.add_argument(
         "--fail-on", choices=LEVELS, help="exit 1 if a rule at this level or above matches"
@@ -419,7 +419,7 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
         # A report is little use without events to read, even if none go to the terminal.
         wanted = args.examples or (HTML_EXAMPLES if args.html else 0)
         if args.logs:
-            report_ = hunt(col, args.logs, target, wanted, _progress())
+            report_ = hunt(col, args.logs, target, wanted)
         else:
             db = database.connect(dsn, args.timeout)
             try:
@@ -468,6 +468,12 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
         limit = LEVELS.index(args.fail_on)
         if any(h.rank <= limit for h in report_.hits):
             return 1
+        if report_.timed_out:
+            print(
+                f"sigma2sql: {report_.timed_out} rules hit the time limit, the run is incomplete",
+                file=sys.stderr,
+            )
+            return 2
     return 0
 
 

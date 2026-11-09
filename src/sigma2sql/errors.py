@@ -4,3 +4,11 @@ class RuleError(Exception):
 
 class UnsupportedRule(Exception):
     """The rule is valid Sigma but uses a feature sigma2sql cannot translate."""
+
+
+class QueryTimeout(Exception):
+    """The database stopped a query at its time limit."""
+
+
+class ConnectionLost(Exception):
+    """The database went away; later queries cannot work either."""

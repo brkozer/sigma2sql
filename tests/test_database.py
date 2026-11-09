@@ -235,3 +235,129 @@ def test_a_bad_since_is_exit_2(
     rules.write_text(RULES)
     assert main(["hunt", str(rules), "--logs", "x.jsonl", "--since", "soon"]) == 2
     assert "--since" in capsys.readouterr().err
+
+
+HOSTILE = """title: quote
+level: high
+detection:
+  s:
+    User: "x'; DROP TABLE s2s_hunt_events; --"
+  condition: s
+---
+title: field
+level: high
+detection:
+  s:
+    "a'); DROP TABLE s2s_hunt_events; --": y
+  condition: s
+"""
+
+
+def test_rule_text_stays_data(
+    tmp_path: Path, dsn: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(database.ENV, dsn)
+    rules = tmp_path / "hostile.yml"
+    rules.write_text(HOSTILE)
+    main(["hunt", str(rules), "-t", TABLE, "--json-column", "event"])
+    db = database.connect(dsn)
+    try:
+        assert len(db.rows(f"SELECT * FROM {TABLE}")) == len(EVENTS)
+    finally:
+        db.close()
+
+
+def test_a_malformed_row_does_not_end_every_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    address = next(sqlite_db(tmp_path))
+    path = address.removeprefix("sqlite:")
+    con = sqlite3.connect(path)
+    con.execute(f"INSERT INTO {TABLE} VALUES ('this is not json')")
+    con.commit()
+    con.close()
+    assert hunt(tmp_path, address, monkeypatch) == 0
+    out = capsys.readouterr()
+    assert len(json.loads(out.out)) == 3
+    assert "1 rows are not valid JSON" in out.err
+
+
+def test_a_missing_column_is_a_skip_on_sqlite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "plain.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE p (EventID INT)")
+    con.execute("INSERT INTO p VALUES (1)")
+    con.commit()
+    con.close()
+    rules = tmp_path / "r.yml"
+    rules.write_text("title: t\ndetection: {s: {ParentImage|contains: Image}, condition: s}\n")
+    monkeypatch.setenv(database.ENV, f"sqlite:{path}")
+    assert main(["hunt", str(rules), "-t", "p", "--format", "json"]) == 2
+    out = capsys.readouterr()
+    assert json.loads(out.out) == [] and "no such column" in out.err
+
+
+def test_since_without_a_readable_time_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    address = next(sqlite_db(tmp_path))
+    args = ["--timestamp-field", "nothing", "--since", "2000-01-01"]
+    assert hunt(tmp_path, address, monkeypatch, *args) == 2
+    assert "readable time" in capsys.readouterr().err
+
+
+def test_a_lost_connection_stops_the_hunt(tmp_path: Path) -> None:
+    from sigma2sql.collection import Collection
+    from sigma2sql.errors import ConnectionLost
+    from sigma2sql.sql import Target
+
+    class Gone:
+        dialect = "postgres"
+
+        def rows(self, query: str) -> list[dict[str, Any]]:
+            if "x FROM" in query:
+                return [{"n": 1}]
+            raise ConnectionLost("gone")
+
+        def close(self) -> None:
+            pass
+
+    rules = tmp_path / "r.yml"
+    rules.write_text(RULES)
+    col = Collection.load([rules])
+    with pytest.raises(ConnectionLost):
+        database.hunt_database(col, Gone(), Target(json_column="e"))  # type: ignore[arg-type]
+
+
+def test_a_timeout_makes_a_fail_on_run_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sigma2sql import cli
+    from sigma2sql.hunt import Report
+
+    rules = tmp_path / "r.yml"
+    rules.write_text(RULES)
+    monkeypatch.setattr(
+        cli.database, "connect", lambda *_: type("D", (), {"close": lambda s: None})()
+    )
+    monkeypatch.setattr(cli.database, "hunt_database", lambda *a: Report(1, [], 0, [], 0, [], 1))
+    monkeypatch.setenv(database.ENV, "postgresql://h/d")
+    assert main(["hunt", str(rules), "--fail-on", "low"]) == 2
+    assert "incomplete" in capsys.readouterr().err
+
+
+def test_a_bad_address_is_a_message_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rules = tmp_path / "r.yml"
+    rules.write_text(RULES)
+    monkeypatch.setenv(database.ENV, "postgresql://u:se[cret@h/d")
+    assert main(["hunt", str(rules)]) == 2
+    assert "se[cret" not in capsys.readouterr().err
+
+
+def test_redirects_are_not_followed() -> None:
+    handler = database._Refuse()
+    assert handler.redirect_request() is None

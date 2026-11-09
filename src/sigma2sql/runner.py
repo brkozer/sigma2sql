@@ -26,6 +26,8 @@ def connect(path: str | None = None) -> sqlite3.Connection:
         conn = sqlite3.connect(":memory:")
     else:
         conn = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+    # Off, a double-quoted name that is not a column silently becomes a text value.
+    conn.setconfig(sqlite3.SQLITE_DBCONFIG_DQS_DML, False)
     conn.create_function("regexp", 2, _regexp, deterministic=True)
     conn.create_function("cidr_match", 2, _cidr_match, deterministic=True)
     conn.create_aggregate("sigma_percentile", 2, _Percentile)  # type: ignore[arg-type]

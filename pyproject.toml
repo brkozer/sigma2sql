@@ -1,6 +1,6 @@
 [project]
 name = "sigma2sql"
-version = "0.4.0"
+version = "0.5.0"
 description = "Sigma rules as SQL for SQLite, PostgreSQL, DuckDB and ClickHouse: convert, hunt through log files and test rules"
 readme = "README.md"
 license = "MIT"
@@ -30,7 +30,7 @@ Issues = "https://github.com/brkozer/sigma2sql/issues"
 Changelog = "https://github.com/brkozer/sigma2sql/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-duckdb = ["duckdb>=1.3", "numpy>=2.0"]
+duckdb = ["duckdb>=1.3", "numpy>=2.0", "pytz"]
 postgres = ["psycopg[binary]>=3.2.3"]
 evtx = [
     "evtx>=0.8",

@@ -7,6 +7,7 @@ refuses writes, each query has a time limit, and the address is never printed wi
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import sqlite3
 import urllib.error
@@ -18,6 +19,7 @@ from typing import Any, Protocol
 from urllib.parse import unquote, urlsplit
 
 from sigma2sql.collection import Collection
+from sigma2sql.errors import ConnectionLost, QueryTimeout
 from sigma2sql.hunt import Report, open_duckdb, run_rules
 from sigma2sql.runner import connect as connect_sqlite
 from sigma2sql.sql import Dialect, Renderer, Target, quote_table
@@ -51,12 +53,31 @@ class _Postgres:
         self.con.execute("SET TIME ZONE 'UTC'")
 
     def rows(self, query: str) -> list[dict[str, Any]]:
-        cur = self.con.execute(query)
+        import psycopg
+
+        try:
+            cur = self.con.execute(query)
+        except psycopg.errors.QueryCanceled as exc:
+            raise QueryTimeout(str(exc)) from exc
+        except psycopg.OperationalError as exc:
+            if self.con.closed or self.con.broken:
+                raise ConnectionLost(f"the database connection was lost: {exc}") from exc
+            raise
         names = [column.name for column in cur.description]
         return [dict(zip(names, row, strict=True)) for row in cur.fetchall()]
 
     def close(self) -> None:
         self.con.close()
+
+
+class _Refuse(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the user's password to another address."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_NO_REDIRECTS = urllib.request.build_opener(_Refuse)
 
 
 class _ClickHouse:
@@ -72,29 +93,40 @@ class _ClickHouse:
             "readonly": 2,  # 1 would also refuse the settings sent with each query
             "max_execution_time": timeout,
             "max_query_size": CLICKHOUSE_QUERY_SIZE,
-            "default_format": "JSONEachRow",
             "output_format_json_quote_64bit_integers": 0,
         }
         database = url.path.strip("/")
-        if database:
-            settings["database"] = database
-        self.url = f"{scheme}://{host}:{port}/?{urllib.parse.urlencode(settings)}"
+        place = {"database": database} if database else {}
+        base = f"{scheme}://{host}:{port}/?"
+        self.url = base + urllib.parse.urlencode({**settings, **place})
         self.timeout = timeout + 30
         self.headers = {"Content-Type": "text/plain; charset=utf-8"}
         if url.username:
             login = f"{unquote(url.username)}:{unquote(url.password or '')}"
             token = base64.b64encode(login.encode()).decode()
             self.headers["Authorization"] = f"Basic {token}"
-        self.rows("SELECT 1")
+        try:
+            self.rows("SELECT 1")
+        except RuntimeError as exc:
+            if "readonly" not in str(exc).lower():
+                raise
+            # A user restricted with readonly = 1, the safest setup, may not send any setting.
+            self.url = base + urllib.parse.urlencode(place)
+            self.rows("SELECT 1")
 
     def rows(self, query: str) -> list[dict[str, Any]]:
-        request = urllib.request.Request(self.url, data=query.encode(), headers=self.headers)
+        body = f"{query} FORMAT JSONEachRow".encode()
+        request = urllib.request.Request(self.url, data=body, headers=self.headers)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with _NO_REDIRECTS.open(request, timeout=self.timeout) as response:
                 text = response.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read(400).decode("utf-8", "replace").strip()
+            if "TIMEOUT_EXCEEDED" in detail or "Code: 159" in detail:
+                raise QueryTimeout(detail) from exc
             raise RuntimeError(detail or f"ClickHouse answered {exc.code}") from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise ConnectionLost(f"the database connection was lost: {exc}") from exc
         return [json.loads(line) for line in text.splitlines() if line]
 
     def close(self) -> None:
@@ -141,7 +173,10 @@ def _local_path(dsn: str) -> str:
 
 
 def connect(dsn: str, timeout: int = DEFAULT_TIMEOUT) -> Database:
-    scheme = urlsplit(dsn).scheme.lower()
+    try:
+        scheme = urlsplit(dsn).scheme.lower()
+    except ValueError as exc:
+        raise ValueError("the database address cannot be read") from exc
     if scheme in ("postgresql", "postgres"):
         return _Postgres(dsn, timeout)
     if scheme in ("clickhouse", "clickhouses", "http", "https"):
@@ -155,7 +190,10 @@ def connect(dsn: str, timeout: int = DEFAULT_TIMEOUT) -> Database:
 
 def describe(dsn: str) -> str:
     """The address without the user name, password or options, safe to print and to report."""
-    url = urlsplit(dsn)
+    try:
+        url = urlsplit(dsn)
+    except ValueError:
+        return "database"
     if url.scheme.lower() in ("sqlite", "duckdb"):
         return f"{url.scheme}:{url.path}"
     host = url.hostname or "localhost"
@@ -168,7 +206,10 @@ def describe(dsn: str) -> str:
 
 def scrub(text: str, dsn: str) -> str:
     """Take the password out of an error message from a driver."""
-    password = urlsplit(dsn).password
+    try:
+        password = urlsplit(dsn).password
+    except ValueError:
+        return text
     if password:
         for secret in {password, unquote(password)}:
             text = text.replace(secret, "***")
@@ -196,7 +237,9 @@ def hunt_database(
     progress: Callable[[int, int], None] | None = None,
 ) -> Report:
     """Run every rule and correlation in `rules` on the table `base` names, one at a time."""
-    target = replace(base, dialect=db.dialect)
+    lenient = db.dialect in ("sqlite", "duckdb")
+    target = replace(base, dialect=db.dialect, lenient_json=lenient)
+    warnings: list[str] = []
 
     def count(query: str) -> int:
         return int(next(iter(db.rows(f"SELECT COUNT(*) AS n FROM ({query}) q")[0].values())))
@@ -206,8 +249,44 @@ def hunt_database(
         docs = found if as_rows else [_document(r, target.json_column) for r in found]
         return [json.dumps(doc, default=str, ensure_ascii=False) for doc in docs]
 
-    where = ""
-    if target.since is not None:
-        where = f" WHERE {Renderer(target).epoch()} >= {target.since!r}"
-    events = count(f"SELECT 1 AS x FROM {quote_table(target.table)}{where}")
-    return run_rules(rules, target, events, [], count, sample, "*", examples, progress)
+    events = _count_events(target, count, warnings)
+    return run_rules(rules, target, events, warnings, count, sample, "*", examples, progress)
+
+
+def _count_events(target: Target, count: Callable[[str], int], warnings: list[str]) -> int:
+    """How many events the hunt looks at, in the base table and the tables of profile routes."""
+    tables = list(dict.fromkeys([target.table, *(r.table for r in target.routes if r.table)]))
+    time = Renderer(target).epoch()
+    total = 0
+    for table in tables:
+        source = quote_table(table)
+        try:
+            if target.since is None:
+                total += count(f"SELECT 1 AS x FROM {source}")
+                continue
+            total += count(f"SELECT 1 AS x FROM {source} WHERE {time} >= {target.since!r}")
+            readable = f"SELECT 1 AS x FROM {source} WHERE {time} IS NOT NULL"
+            if not total and count(f"SELECT 1 AS x FROM {source}") and not count(readable):
+                raise ValueError(
+                    f"--since: no row of {table} has a readable time in "
+                    f"{target.timestamp}; set --timestamp-field or use a profile"
+                )
+        except QueryTimeout:
+            warnings.append(f"{table}: the events could not be counted within the time limit")
+        except (ValueError, ConnectionLost):
+            raise
+        except Exception:
+            if len(tables) == 1:  # with routes, the rules that do use a missing table say so
+                raise
+    if target.lenient_json and target.json_column:
+        column = quote_table(target.json_column)
+        for table in tables:
+            try:
+                bad = count(
+                    f"SELECT 1 AS x FROM {quote_table(table)} WHERE NOT json_valid({column})"
+                )
+            except (QueryTimeout, ValueError, RuntimeError, sqlite3.Error):
+                continue
+            if bad:
+                warnings.append(f"{table}: {bad:,} rows are not valid JSON and cannot match")
+    return total

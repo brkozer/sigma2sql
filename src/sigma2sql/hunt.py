@@ -13,7 +13,7 @@ from typing import Any
 
 from sigma2sql.collection import Collection
 from sigma2sql.correlation import correlation_query
-from sigma2sql.errors import RuleError, UnsupportedRule
+from sigma2sql.errors import ConnectionLost, QueryTimeout, RuleError, UnsupportedRule
 from sigma2sql.rule import Correlation, Document
 from sigma2sql.sql import Target, literal, to_query
 
@@ -48,6 +48,8 @@ class Report:
     other_logs: int = 0
     # Logs that could only be read in part.
     warnings: list[str] = field(default_factory=list)
+    # Rules the database stopped at the time limit; also counted in `skipped`.
+    timed_out: int = 0
 
 
 def open_duckdb(path: str = ":memory:", read_only: bool = False) -> Any:
@@ -192,6 +194,7 @@ def run_rules(
     items = [item for item in candidates if _for_these_logs(item, rules, target)]
     hits: list[Hit] = []
     skipped: list[tuple[Document, str]] = []
+    timed_out = 0
     for done, item in enumerate(items):
         if progress:
             progress(done, len(items))
@@ -201,6 +204,12 @@ def run_rules(
         except (RuleError, UnsupportedRule) as exc:
             skipped.append((item, str(exc)))
             continue
+        except QueryTimeout as exc:
+            timed_out += 1
+            skipped.append((item, str(exc).splitlines()[0]))
+            continue
+        except ConnectionLost:
+            raise
         except Exception as exc:  # the database's own errors: one bad rule must not end the hunt
             skipped.append((item, str(exc).splitlines()[0] if str(exc) else repr(exc)))
             continue
@@ -210,12 +219,15 @@ def run_rules(
         if examples:
             try:
                 shown = sample(query, as_rows)
+            except ConnectionLost:
+                raise
             except Exception as exc:  # e.g. a time value out of range in one result row
                 warnings.append(f"{item.title}: no examples: {str(exc).splitlines()[0]}")
         hits.append(Hit(item, found, shown))
     hits.sort(key=lambda h: (h.rank, -h.count, h.rule.title))
     other_logs = len(candidates) - len(items)
-    return Report(events, hits, len(items) - len(skipped), skipped, other_logs, warnings)
+    ran = len(items) - len(skipped)
+    return Report(events, hits, ran, skipped, other_logs, warnings, timed_out)
 
 
 def _for_these_logs(item: Document, rules: Collection, target: Target) -> bool:
