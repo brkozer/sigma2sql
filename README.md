@@ -103,6 +103,12 @@ sigma2sql coverage sigma/rules --logs 'logs/*.evtx'
 
 See [Rule coverage](https://brkozer.github.io/sigma2sql/coverage/).
 
+## Use it from a page
+
+`sigma2sql serve sigma/rules` opens a page on this machine: choose the rules and the logs, see
+which rules can match, map the missing fields, run the rules and read the report. See
+[Local interface](https://brkozer.github.io/sigma2sql/serve/).
+
 ## Convert rules
 
 ```console
@@ -259,7 +265,7 @@ files exits with code 2, also next to a good path.
 The same check as a GitHub Action:
 
 ```yaml
-- uses: brkozer/sigma2sql@v0.5.1
+- uses: brkozer/sigma2sql@v0.5.2
   with:
     path: rules
     profile: sysmon          # optional

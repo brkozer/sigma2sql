@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2 (2026-11-10)
+
+- `serve` opens a page on this machine to choose rules and logs, see coverage, map missing
+  fields, run the rules and read the report. It listens only on `127.0.0.1`, needs the secret
+  it prints at start, and runs no script.
+
 ## 0.5.1 (2026-11-10)
 
 - `coverage` shows which rules can match your logs at all, from a sample of events in files or
