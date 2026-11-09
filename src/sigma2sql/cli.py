@@ -17,20 +17,22 @@ from typing import Any
 
 import yaml
 
-from sigma2sql import database, html_report
+from sigma2sql import coverage, database, html_report
 from sigma2sql.collection import Collection, rule_files
 from sigma2sql.correlation import correlation_query
 from sigma2sql.errors import RuleError, UnsupportedRule
 from sigma2sql.expr import regexes
-from sigma2sql.hunt import LEVELS, Hit, Report, hunt
+from sigma2sql.hunt import COLUMN, LEVELS, TABLE, Hit, Report, hunt, load_logs
+from sigma2sql.hunt import connect as open_logs
 from sigma2sql.profile import apply_profile, builtin_profiles, load_placeholders, load_profile
 from sigma2sql.rule import Correlation, Document
 from sigma2sql.runner import matching_events, read_jsonl, rows
 from sigma2sql.runner import target as runner_target
 from sigma2sql.sarif import Finding, report
-from sigma2sql.sql import DIALECTS, Target, to_query
+from sigma2sql.sql import DIALECTS, Target, quote_table, to_query
 
 HTML_EXAMPLES = 5
+COVERAGE_FIELDS = 20
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -95,6 +97,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     check.add_argument("--sarif", type=Path, help="also write the failures to this SARIF file")
     _field_options(check)
 
+    cover = sub.add_parser("coverage", help="show which rules can match these logs at all")
+    cover.add_argument("rules", nargs="+", type=Path, help="rule files or directories")
+    cover.add_argument(
+        "-l", "--logs", nargs="+", help=f"log files. Without it, the database in ${database.ENV}"
+    )
+    cover.add_argument("-t", "--table", help="table holding the events, in a database")
+    cover.add_argument("--json-column", help="read fields from this JSON column, in a database")
+    cover.add_argument("--keyword-column", help="column searched by keyword rules, in a database")
+    cover.add_argument(
+        "--sample", type=_positive, default=10000, help="events to look at (default: %(default)s)"
+    )
+    cover.add_argument(
+        "--timeout",
+        type=_positive,
+        default=database.DEFAULT_TIMEOUT,
+        help="seconds each query may take on PostgreSQL or ClickHouse (default: %(default)s)",
+    )
+    cover.add_argument("--format", choices=("table", "json"), default="table")
+    _field_options(cover)
+
     sub.add_parser("profiles", help="list the built-in profiles")
 
     args = parser.parse_args(argv)
@@ -115,6 +137,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _convert(args.paths, target)
     if args.command == "hunt":
         return _hunt(args, target)
+    if args.command == "coverage":
+        return _coverage(args, target)
     if args.command == "check":
         return _check(args.paths, target, args.require_tests, args.sarif)
     return _test(args.rule, args.events, target, args.expect)
@@ -176,7 +200,7 @@ def _target(args: argparse.Namespace) -> Target:
     )
     profile = args.profile
     logs = getattr(args, "logs", None) or []
-    if args.command == "hunt" and not profile and any(_is_evtx(p) for p in logs):
+    if args.command in ("hunt", "coverage") and not profile and any(_is_evtx(p) for p in logs):
         # EVTX events have one known layout, so the right profile needs no asking.
         profile = "evtx"
         if not all(_is_evtx(p) for p in logs):
@@ -475,6 +499,118 @@ def _hunt(args: argparse.Namespace, target: Target) -> int:
             )
             return 2
     return 0
+
+
+def _coverage(args: argparse.Namespace, target: Target) -> int:
+    if _no_rules(args.rules):
+        return 2
+    dsn = os.environ.get(database.ENV, "")
+    if not args.logs and not dsn:
+        print(f"sigma2sql: give --logs, or set {database.ENV} to a database", file=sys.stderr)
+        return 2
+    if args.logs and (args.table or args.json_column or args.keyword_column):
+        print("sigma2sql: --table and the column options are for a database", file=sys.stderr)
+        return 2
+    col = Collection.load(args.rules)
+    _report_errors(col)
+    try:
+        if args.logs:
+            result = _coverage_of_files(col, args, target)
+        else:
+            db = database.connect(dsn, args.timeout)
+            try:
+                result = _coverage_of_database(col, db, args, target)
+            finally:
+                db.close()
+    except Exception as exc:  # the drivers raise their own error types
+        print(f"sigma2sql: {database.scrub(str(exc), dsn)}", file=sys.stderr)
+        return 2
+    if not result.sampled:
+        print("sigma2sql: no events to look at", file=sys.stderr)
+        return 2
+    for item, reason in result.skipped:
+        print(f"skip {item.path or item.title}: {reason}", file=sys.stderr)
+    if args.format == "json":
+        print(json.dumps(_coverage_json(result), indent=2))
+    else:
+        _print_coverage(result)
+    return 0
+
+
+def _coverage_of_files(
+    col: Collection, args: argparse.Namespace, target: Target
+) -> coverage.Coverage:
+    con = open_logs()
+    warnings: list[str] = []
+    load_logs(con, args.logs, warnings)
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    routes = tuple(replace(r, table=None) for r in target.routes)
+    target = replace(target, dialect="duckdb", table=TABLE, json_column=COLUMN, routes=routes)
+
+    def sample(_: str) -> list[dict[str, Any]]:
+        query = f"SELECT CAST({COLUMN} AS VARCHAR) FROM {TABLE} LIMIT {args.sample}"
+        return [json.loads(row[0]) for row in con.execute(query).fetchall()]
+
+    return coverage.measure(col, target, sample, keywords=True)
+
+
+def _coverage_of_database(
+    col: Collection, db: database.Database, args: argparse.Namespace, target: Target
+) -> coverage.Coverage:
+    target = replace(target, dialect=db.dialect)
+
+    def sample(table: str) -> list[dict[str, Any]]:
+        rows = db.rows(f"SELECT * FROM {quote_table(table)} LIMIT {args.sample}")
+        found = [database.document(row, target.json_column) for row in rows]
+        return [row for row in found if isinstance(row, dict)]
+
+    keywords = bool(target.json_column or target.keyword_column)
+    return coverage.measure(col, target, sample, keywords)
+
+
+def _coverage_json(result: coverage.Coverage) -> dict[str, object]:
+    return {
+        "sampled_events": result.sampled,
+        "ready": result.count(coverage.READY),
+        "partial": result.count(coverage.PARTIAL),
+        "blind": result.count(coverage.BLIND),
+        "other_logs": result.other_logs,
+        "missing_fields": [
+            {"field": name, "blinds": blind, "weakens": weak}
+            for name, blind, weak in result.missing_fields()
+        ],
+        "rules": [
+            {
+                "title": r.rule.title,
+                "id": r.rule.id,
+                "level": r.rule.level,
+                "path": str(r.rule.path) if r.rule.path else None,
+                "status": r.status,
+                "missing": list(r.missing),
+            }
+            for r in result.rules
+        ],
+    }
+
+
+def _print_coverage(result: coverage.Coverage) -> None:
+    print(f"Looked at the fields of {result.sampled:,} events.\n")
+    print(f"{result.count(coverage.READY):>7,}  rules have every field they use")
+    print(f"{result.count(coverage.PARTIAL):>7,}  rules can match but miss some fields")
+    print(f"{result.count(coverage.BLIND):>7,}  rules can never match")
+    if result.other_logs:
+        print(f"{result.other_logs:>7,}  rules are for other log sources")
+    if result.skipped:
+        print(f"{len(result.skipped):>7,}  rules could not be judged")
+    missing = result.missing_fields()
+    if not missing:
+        return
+    print(f"\n{'BLINDS':>7}{'WEAKENS':>9}  MISSING FIELD")
+    for name, blind, weak in missing[:COVERAGE_FIELDS]:
+        print(f"{blind:>7,}{weak:>9,}  {name}")
+    if len(missing) > COVERAGE_FIELDS:
+        print(f"... and {len(missing) - COVERAGE_FIELDS:,} more; --format json lists them all")
 
 
 def _progress() -> Callable[[int, int], None] | None:

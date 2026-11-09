@@ -238,6 +238,24 @@ class Renderer:
             name = _expand(templates, sigma_field) if templates else sigma_field
         return self._located(name)
 
+    def locations(self, sigma_field: str) -> tuple[str, ...]:
+        """Where in an event this field can be, in the order they are tried."""
+        name = self.t.mapping.get(sigma_field)
+        if name is None:
+            templates = self._templates()
+            name = _expand(templates, sigma_field) if templates else sigma_field
+        return (name,) if isinstance(name, str) else tuple(name)
+
+    def time_locations(self) -> tuple[str, ...]:
+        name = self.t.mapping.get(self.t.timestamp)
+        if name is not None:
+            return (name,) if isinstance(name, str) else tuple(name)
+        templates = self._templates()
+        if not templates:
+            return (self.t.timestamp,)
+        expanded = _expand(templates, self.t.timestamp)
+        return (self.t.timestamp, *expanded) if self.json else expanded
+
     def time_column(self) -> str:
         """The event time: a profile gives its full path, which `default_field` must not
         move, while a plain name such as `UtcTime` can sit with the other fields."""

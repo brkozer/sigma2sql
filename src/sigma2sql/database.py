@@ -223,7 +223,7 @@ def scrub(text: str, dsn: str) -> str:
     return text
 
 
-def _document(row: dict[str, Any], json_column: str | None) -> Any:
+def document(row: dict[str, Any], json_column: str | None) -> Any:
     """The event as a report shows it: its JSON document, or the columns of the row."""
     if json_column not in row:
         return row
@@ -253,7 +253,7 @@ def hunt_database(
 
     def sample(query: str, as_rows: bool) -> list[str]:
         found = db.rows(f"SELECT * FROM ({query}) q LIMIT {examples}")
-        docs = found if as_rows else [_document(r, target.json_column) for r in found]
+        docs = found if as_rows else [document(r, target.json_column) for r in found]
         return [json.dumps(doc, default=str, ensure_ascii=False) for doc in docs]
 
     events = _count_events(target, count, warnings)
