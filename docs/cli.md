@@ -12,7 +12,7 @@ positional arguments:
   {convert,test,hunt,check,coverage,serve,profiles}
     convert             print SQL for rules and correlations
     test                run a rule file against JSON Lines events
-    hunt                run rules over EVTX, JSON, Parquet or CSV logs with DuckDB
+    hunt                run rules over EVTX, JSON, Parquet or CSV logs, or in a database
     check               test rules against their <rule>.match.jsonl / <rule>.nomatch.jsonl
                         files
     coverage            show which rules can match these logs at all

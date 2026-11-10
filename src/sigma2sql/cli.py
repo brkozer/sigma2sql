@@ -58,7 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _field_options(test)
 
     hunt_p = sub.add_parser(
-        "hunt", help="run rules over EVTX, JSON, Parquet or CSV logs with DuckDB"
+        "hunt", help="run rules over EVTX, JSON, Parquet or CSV logs, or in a database"
     )
     hunt_p.add_argument("rules", nargs="+", type=Path, help="rule files or directories")
     hunt_p.add_argument(
