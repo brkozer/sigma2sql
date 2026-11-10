@@ -112,6 +112,8 @@ See [Rule coverage](https://brkozer.github.io/sigma2sql/coverage/).
 which rules can match, map the missing fields, run the rules and read the report. See
 [Local interface](https://brkozer.github.io/sigma2sql/serve/).
 
+<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/serve-coverage.png" alt="The coverage page of sigma2sql serve: 709 of 2,427 rules can never match, a bar of all rules, and the missing fields that cost the most rules with a box to enter each one's name in the logs" width="100%"></p>
+
 ## Convert rules
 
 ```console

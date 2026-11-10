@@ -15,6 +15,10 @@ The page has three steps:
    shows the mapping as a profile you can keep and use with the commands.
 3. Run the rules and read the [report](hunt.md#-html).
 
+![The first page of sigma2sql serve, asking where the logs are: in files or in a database](serve-setup.png)
+
+![The coverage page of sigma2sql serve: 709 of 2,427 rules can never match, a bar of all rules, and the missing fields that cost the most rules with a box to enter each one's name in the logs](serve-coverage.png)
+
 `--port` sets the port and `--no-browser` only prints the address.
 
 ## Safety
