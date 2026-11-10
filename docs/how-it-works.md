@@ -79,6 +79,8 @@ All code is in `src/sigma2sql/`.
 | `database.py` | `hunt` on a database: the read-only connections, the time limit and the address without its password. |
 | `sarif.py` | SARIF 2.1.0 reports. |
 | `html_report.py` | The `hunt --html` page. |
+| `coverage.py` | `coverage`: which fields a sample of events has and which rules can match. |
+| `web.py` | `serve`: the local page, its secret and its checks on every request. |
 | `cli.py` | Argument parsing, the order of defaults, profile and options, output and exit codes. |
 | `errors.py` | `RuleError` and `UnsupportedRule`. |
 

@@ -7,8 +7,9 @@
 
 Run [Sigma](https://sigmahq.io) detection rules as SQL on **SQLite**, **PostgreSQL**,
 **DuckDB** and **ClickHouse**: hunt through log files, `.evtx` included, without a SIEM,
-hunt in the database your logs already live in over a read-only connection, convert rules
-for that database, and unit-test rules before they reach production. Full documentation:
+hunt in the database your logs already live in over a read-only connection, see which rules
+can match your logs at all, convert rules for that database, and unit-test rules before they
+reach production, from the command line or a page on your own machine. Full documentation:
 [brkozer.github.io/sigma2sql](https://brkozer.github.io/sigma2sql/).
 
 - **All of SigmaHQ converts**: the 3807 rules in its five rule folders on SQLite, DuckDB and
@@ -24,6 +25,8 @@ for that database, and unit-test rules before they reach production. Full docume
   sequences over a sliding window, as plain SQL.
 - **Your schema**: profiles map Sigma fields to your columns or nested JSON (Sysmon, EVTX
   exports, Elastic/Winlogbeat ECS, OCSF built in) and limit each rule to the right log source.
+- **Blind spots**: `coverage` lists the rules that can never match your logs and the missing
+  fields that cost the most rules.
 
 <p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/demo.svg" alt="sigma2sql hunting through sample logs, checking rule tests and converting a rule to PostgreSQL" width="100%"></p>
 

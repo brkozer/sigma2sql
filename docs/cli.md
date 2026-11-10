@@ -1,20 +1,22 @@
 # Command line
 
-`sigma2sql` has five subcommands. `python -m sigma2sql` runs the same program.
+`sigma2sql` has seven subcommands. `python -m sigma2sql` runs the same program.
 
 ```console
 $ sigma2sql --help
-usage: sigma2sql [-h] [--version] {convert,test,hunt,check,profiles} ...
+usage: sigma2sql [-h] [--version] {convert,test,hunt,check,coverage,serve,profiles} ...
 
 Convert Sigma rules to SQL, test them against sample events and hunt through log files.
 
 positional arguments:
-  {convert,test,hunt,check,profiles}
+  {convert,test,hunt,check,coverage,serve,profiles}
     convert             print SQL for rules and correlations
     test                run a rule file against JSON Lines events
     hunt                run rules over EVTX, JSON, Parquet or CSV logs with DuckDB
-    check               test rules against their <rule>.match.jsonl /
-                        <rule>.nomatch.jsonl files
+    check               test rules against their <rule>.match.jsonl / <rule>.nomatch.jsonl
+                        files
+    coverage            show which rules can match these logs at all
+    serve               open a page on this machine to run all of this
     profiles            list the built-in profiles
 
 options:
@@ -434,6 +436,77 @@ cannot be written gives exit code 2.
 The repository is also a GitHub Action that runs `check`, see [Test
 rules](testing.md#github-action).
 
+## coverage
+
+Show which rules can match the logs at all, judged from the fields of a sample of events. It
+reads log files with `--logs`, or the database in `SIGMA2SQL_DSN`, with the same table and
+column options as `hunt`. See [Rule coverage](coverage.md).
+
+```console
+$ sigma2sql coverage --help
+usage: sigma2sql coverage [-h] [-l LOGS [LOGS ...]] [-t TABLE] [--json-column JSON_COLUMN]
+                          [--keyword-column KEYWORD_COLUMN] [--sample SAMPLE]
+                          [--timeout TIMEOUT] [--format {table,json}] [-p PROFILE]
+                          [-m MAPPING] [--placeholders PLACEHOLDERS] [--nested]
+                          [--timestamp-field TIMESTAMP_FIELD]
+                          [--timestamp-format {iso,epoch_s,epoch_ms}]
+                          rules [rules ...]
+
+positional arguments:
+  rules                 rule files or directories
+
+options:
+  -h, --help            show this help message and exit
+  -l LOGS [LOGS ...], --logs LOGS [LOGS ...]
+                        log files. Without it, the database in $SIGMA2SQL_DSN
+  -t TABLE, --table TABLE
+                        table holding the events, in a database
+  --json-column JSON_COLUMN
+                        read fields from this JSON column, in a database
+  --keyword-column KEYWORD_COLUMN
+                        column searched by keyword rules, in a database
+  --sample SAMPLE       events to look at (default: 10000)
+  --timeout TIMEOUT     seconds each query may take on PostgreSQL or ClickHouse (default:
+                        60)
+  --format {table,json}
+  -p PROFILE, --profile PROFILE
+                        built-in profile name (see `sigma2sql profiles`) or YAML file
+  -m MAPPING, --mapping MAPPING
+                        YAML map of Sigma field -> column/key
+  --placeholders PLACEHOLDERS
+                        YAML map of %name% placeholder to value(s)
+  --nested              dotted names are nested JSON paths
+  --timestamp-field TIMESTAMP_FIELD
+                        event time field for correlations
+  --timestamp-format {iso,epoch_s,epoch_ms}
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--sample N` | `10000` | events to read from each table to find the fields |
+| `--format` | `table` | `json` lists every rule with its status and missing fields |
+
+The other options mean the same as for [`hunt`](#hunt).
+
+## serve
+
+Open a page on this machine to choose rules and logs, see coverage, map missing fields, run
+the rules and read the report. It listens only on `127.0.0.1` and prints an address with a
+secret. See [Local interface](serve.md).
+
+```console
+$ sigma2sql serve --help
+usage: sigma2sql serve [-h] [--port PORT] [--no-browser] [rules ...]
+
+positional arguments:
+  rules         rule files or directories to start with
+
+options:
+  -h, --help    show this help message and exit
+  --port PORT   default: any free port
+  --no-browser  only print the address
+```
+
 ## profiles
 
 List the built-in profiles. This command has no options apart from `--help`.
@@ -454,7 +527,12 @@ sysmon          Sysmon events with their original field names; each Sigma catego
 | 1 | a rule or file was skipped | `--expect` did not hold | a rule reached `--fail-on`, or the `duckdb`, `evtx` or `psycopg` package is missing | a rule failed, could not be loaded or converted, or has no tests with `--require-tests` |
 | 2 | no rules found, also when the paths hold only filters | no rules found, the rule or events could not be read, converted or run, or a regular expression is invalid | no rules found, no rule could run, a log or the database could not be read, the database connection was lost, `--since` found no readable time in a database, a rule reached `--timeout` with `--fail-on` set and nothing matched at that level, damaged `.evtx` files gave no event at all, neither `--logs` nor `SIGMA2SQL_DSN` was given, or the `--sarif` or `--html` file could not be written | no rules found, or the `--sarif` file could not be written |
 
-For all four commands, code 2 also covers bad usage and a profile, mapping or placeholders file
+`coverage` exits 0 when it could judge the rules, 1 when the `duckdb` or `evtx` package is
+missing, and 2 when no rules were found, no event could be read, neither `--logs` nor
+`SIGMA2SQL_DSN` was given, or a log or the database could not be read. `serve` exits 0 when it
+is stopped with Ctrl+C.
+
+For all four commands in the table, code 2 also covers bad usage and a profile, mapping or placeholders file
 that cannot be loaded. For `test`, `hunt` and `check`, "no rules found" means a rule path that
 does not exist or holds no rule files, also next to a good path; a file with only filters
 counts as a rule file there. `profiles`, `--help` and `--version` exit 0.

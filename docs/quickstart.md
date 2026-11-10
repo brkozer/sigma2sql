@@ -151,6 +151,9 @@ Office application starting a shell: 1 of 12 events matched
 
 ## Where next
 
+- [Rule coverage](coverage.md): `sigma2sql coverage` shows which rules can match your logs.
+- [Local interface](serve.md): `sigma2sql serve` opens all of this in a page.
+- [Hunt in a database](database.md): run the rules where your logs already are.
 - [Correlations](correlations.md): event counts, value counts and sequences over a time window.
 - [Placeholders](placeholders.md) and [Filters](filters.md): your values and exceptions, kept
   outside the rules.

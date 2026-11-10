@@ -8,10 +8,11 @@ hide: [navigation]
 Run [Sigma](https://sigmahq.io) detection rules as SQL on SQLite, PostgreSQL, DuckDB and
 ClickHouse.
 
-sigma2sql does three jobs. It hunts through log files, `.evtx` included, without a SIEM, or
-in a database over a read-only connection. It converts rules for the database your logs
-already live in. It tests rules against example events before they reach production.
-Correlations become SQL too.
+sigma2sql hunts through log files, `.evtx` included, without a SIEM, or in a database over a
+read-only connection. It shows which of your rules can match your logs at all. It converts
+rules for the database your logs already live in, and tests them against example events before
+they reach production. Correlations become SQL too. All of it also works from a page on your
+own machine.
 
 ![sigma2sql hunting through sample logs, checking rule tests and converting a rule to PostgreSQL](demo.svg)
 
@@ -21,6 +22,9 @@ Correlations become SQL too.
 - **[Hunt through log files](hunt.md)**: log formats, `.evtx`, HTML reports and exit codes.
 - **[Hunt in a database](database.md)**: rules on PostgreSQL, ClickHouse, SQLite or DuckDB,
   read-only.
+- **[Rule coverage](coverage.md)**: which rules can never match, and the missing fields that
+  cost the most.
+- **[Local interface](serve.md)**: the same work from a page on this machine.
 - **[Convert rules](convert.md)**: SQL for your database, your table and your columns.
 - **[Profiles](profiles.md)**: map Sigma fields to your schema and limit rules by log source.
 - **[Test rules](testing.md)**: example events next to each rule, and a GitHub Action.
