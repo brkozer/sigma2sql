@@ -471,7 +471,7 @@ high             1  Office application starting a shell  (examples/rules/office_
 medium           1  Successful RDP logon from a public address  (examples/rules/rdp_from_outside.yml)
 4 of 4 rules matched 12 events (0 rules skipped)
 $ grep -o 'postgresql://[^<]*' hits.html
-postgresql://localhost:15432/logs
+postgresql://db.example/logs
 ```
 
 What an example shows depends on the table:
@@ -490,15 +490,14 @@ replaced by `***`. It can name the host and the user:
 
 ```console
 $ sigma2sql hunt failed.yml -t logs
-sigma2sql: connection failed: connection to server at "127.0.0.1", port 15432 failed: FATAL:  password authentication failed for user "sigma_reader"
+sigma2sql: connection failed: connection to server at "db.example" (192.0.2.10), port 5432 failed: FATAL:  password authentication failed for user "sigma_reader"
 ```
 
-An error from ClickHouse is passed on as the server wrote it, cut at 400 bytes, so it can look
-like raw text or JSON:
+An error from ClickHouse is passed on with the server's own message:
 
 ```console
 $ sigma2sql hunt failed.yml -t missing_table --json-column event; echo $?
-sigma2sql: {"exception": "Code: 60. DB::Exception: Unknown table expression identifier 'missing_table' in scope SELECT 1 AS x FROM missing_table. (UNKNOWN_TABLE) (version 25.8.33.6 (official build))"}
+sigma2sql: Code: 60. DB::Exception: Unknown table expression identifier 'missing_table' in scope SELECT 1 AS x FROM missing_table. (UNKNOWN_TABLE) (version 25.8.33.6 (official build))
 2
 ```
 
