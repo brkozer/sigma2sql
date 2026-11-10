@@ -1,4 +1,4 @@
-"""Render the README terminal screenshot from real command output.
+"""Render the terminal screenshot for the README and the site from real command output.
 
 uv run python scripts/demo_svg.py docs/demo.svg
 """
@@ -14,6 +14,7 @@ from rich.text import Text
 
 COMMANDS = [
     "sigma2sql hunt examples/rules --logs examples/events.jsonl",
+    "sigma2sql coverage examples/rules --logs examples/events.jsonl",
     "sigma2sql check examples/rules --require-tests",
     "sigma2sql convert examples/rules/office_spawns_shell.yml -d postgres --json-column data",
 ]

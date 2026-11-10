@@ -13,7 +13,7 @@ rules for the database your logs already live in, and tests them against example
 they reach production. Correlations become SQL too. All of it also works from a page on your
 own machine.
 
-![sigma2sql hunting through sample logs, checking rule tests and converting a rule to PostgreSQL](demo.svg)
+![The sigma2sql coverage page: 709 of 2,427 rules can never match these logs, with the missing fields that cost the most rules](serve-coverage.png)
 
 <div class="grid cards" markdown>
 
@@ -41,19 +41,12 @@ own machine.
 - **Anyone with logs in a database**: the generated SQL is a normal query you can run, schedule
   or put in a view. A [profile](profiles.md) adapts it to your columns or nested JSON.
 
-## A short example
+## From the command line
 
-The repository has four example rules and a small event file:
+The page above is [`sigma2sql serve`](serve.md). Everything it does is also a command. Here they
+run on the four example rules and the small event file in the repository:
 
-```console
-$ sigma2sql hunt examples/rules --logs examples/events.jsonl
-LEVEL         HITS  RULE
-high             2  PowerShell started with an encoded command  (examples/rules/encoded_powershell.yml)
-high             1  Brute force against one account  (examples/rules/brute_force.yml)
-high             1  Office application starting a shell  (examples/rules/office_spawns_shell.yml)
-medium           1  Successful RDP logon from a public address  (examples/rules/rdp_from_outside.yml)
-4 of 4 rules matched 12 events (0 rules skipped)
-```
+![sigma2sql on the command line: hunting through sample logs, checking their coverage, testing rules and converting a rule to PostgreSQL](demo.svg)
 
 The brute force rule is a [correlation](correlations.md): three failed logons for one account
 within five minutes. It runs as SQL like the others. The same rules also

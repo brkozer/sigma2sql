@@ -21,6 +21,8 @@ and a one-file HTML report to hand over.
 sigma2sql hunt sigma/rules --logs 'incident/*.evtx' --html report.html
 ```
 
+<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/report.png" alt="The sigma2sql HTML report: matching rules by level and ATT&CK tactic, with one rule opened to show its events" width="100%"></p>
+
 **Find your blind spots.** A rule that needs a field your logs do not have never fires, and
 nothing tells you. `coverage` lists those rules and the missing fields that cost the most.
 
@@ -72,8 +74,10 @@ sigma2sql hunt sigma/rules --logs 'logs/*.evtx'
 ```
 
 `convert`, `test` and `check` need nothing beyond the base package. Python 3.12 or newer.
+On the example rules in this repository:
 
-<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/report.png" alt="The sigma2sql HTML report: matching rules by level and ATT&CK tactic, with one rule opened to show its events" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/demo.svg" alt="sigma2sql on the command line: hunting through sample logs, checking their coverage, testing rules and converting a rule to PostgreSQL" width="100%"></p>
+
 
 ## Documentation
 
