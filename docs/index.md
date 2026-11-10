@@ -1,6 +1,5 @@
 ---
 title: sigma2sql
-hide: [navigation]
 ---
 
 # sigma2sql
