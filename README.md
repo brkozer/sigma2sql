@@ -5,365 +5,95 @@
 ![python](https://img.shields.io/badge/python-3.12%2B-3776AB)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
-Run [Sigma](https://sigmahq.io) detection rules as SQL on **SQLite**, **PostgreSQL**,
-**DuckDB** and **ClickHouse**: hunt through log files, `.evtx` included, without a SIEM,
-hunt in the database your logs already live in over a read-only connection, see which rules
-can match your logs at all, convert rules for that database, and unit-test rules before they
-reach production, from the command line or a page on your own machine. Full documentation:
-[brkozer.github.io/sigma2sql](https://brkozer.github.io/sigma2sql/).
+Run [Sigma](https://sigmahq.io) detection rules where your logs already are: a folder of
+`.evtx` files, or a PostgreSQL, ClickHouse, DuckDB or SQLite database. No SIEM, no server to
+set up, and it tells you which of your rules can never fire.
 
-- **All of SigmaHQ converts**: the 3807 rules in its five rule folders on SQLite, DuckDB and
-  ClickHouse, 3804 on PostgreSQL, plus all 45 `count()` aggregation rules SigmaHQ keeps under
-  `unsupported/` and `deprecated/`. 27 of the 3807 use placeholders and need your values
-  ([details](#placeholders)). Every generated query is executed on all four databases in CI
-  each week.
-- **Checked against real events**: all 477 of SigmaHQ's regression samples match as expected on
-  SQLite, DuckDB and ClickHouse and from the original `.evtx` files through `hunt`, and on
-  those events sigma2sql agrees with pySigma on 3076 of 3078 rules; the two differences are
-  IPv6 addresses pySigma's text matching misses ([details](docs/correctness.md)).
-- **Correlations**: event counts, distinct counts, sums, averages, percentiles and temporal
-  sequences over a sliding window, as plain SQL.
-- **Your schema**: profiles map Sigma fields to your columns or nested JSON (Sysmon, EVTX
-  exports, Elastic/Winlogbeat ECS, OCSF built in) and limit each rule to the right log source.
-- **Blind spots**: `coverage` lists the rules that can never match your logs and the missing
-  fields that cost the most rules.
+<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/serve-coverage.png" alt="The sigma2sql coverage page: 709 of 2,427 rules can never match these logs, with the missing fields that cost the most rules" width="100%"></p>
 
-<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/demo.svg" alt="sigma2sql hunting through sample logs, checking rule tests and converting a rule to PostgreSQL" width="100%"></p>
+## What it does
 
-## Install
+**Hunt through logs.** Run thousands of rules over EVTX, JSON, CSV or Parquet files, or
+directly in your database over a read-only connection. You get the matches, most severe first,
+and a one-file HTML report to hand over.
 
 ```bash
-pip install "sigma2sql[duckdb,evtx]"
-# or as a standalone tool
-uv tool install "sigma2sql[duckdb,evtx]"
+sigma2sql hunt sigma/rules --logs 'incident/*.evtx' --html report.html
 ```
 
-The `duckdb` extra is needed for `hunt` over files and `evtx` for reading `.evtx` files;
-`convert`, `test` and `check` only need PyYAML. To hunt in a PostgreSQL database, install
-`sigma2sql[postgres]`.
-
-## Hunt through log files
+**Find your blind spots.** A rule that needs a field your logs do not have never fires, and
+nothing tells you. `coverage` lists those rules and the missing fields that cost the most.
 
 ```bash
-git clone --depth 1 https://github.com/SigmaHQ/sigma
-sigma2sql hunt sigma/rules --logs 'logs/*.evtx' --examples 1
+sigma2sql coverage sigma/rules --logs 'incident/*.evtx'
 ```
 
-`hunt` loads EVTX, JSON, JSON Lines, Parquet or CSV files into an in-memory DuckDB database,
-runs every rule and correlation, and lists the ones that matched, most severe first. On the
-examples in this repository:
-
-```console
-$ sigma2sql hunt examples/rules --logs examples/events.jsonl
-LEVEL         HITS  RULE
-high             2  PowerShell started with an encoded command  (examples/rules/encoded_powershell.yml)
-high             1  Brute force against one account  (examples/rules/brute_force.yml)
-high             1  Office application starting a shell  (examples/rules/office_spawns_shell.yml)
-medium           1  Successful RDP logon from a public address  (examples/rules/rdp_from_outside.yml)
-4 of 4 rules matched 12 events (0 rules skipped)
-```
-
-`--examples N` prints matching events (or correlation results such as
-`{"TargetUserName":"admin","window_start":"2026-11-01 03:12:01","window_end":"2026-11-01 03:12:17","value":3}`),
-`--format json` gives a machine-readable report, `--sarif FILE` also writes a SARIF report
-for code scanning, `--html FILE` also writes one HTML page to read in a browser, and
-`--fail-on high` a non-zero exit code when a rule at that level or above fires. The HTML
-page needs no network and runs no script. It shows up to five examples per rule unless
-`-e` is given.
-
-<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/report.png" alt="sigma2sql HTML report with rule counts by level and ATT&CK tactic, a table of matching rules and one rule opened to show its events" width="100%"></p>
-
-`.evtx` files use the `evtx` profile unless you pass another one. The Windows profiles only
-run rules for `product: windows`, so a directory of all SigmaHQ rules can be used as it is;
-the rest are counted on stderr. Logs from an incident are
-often damaged, so everything readable is kept and the rest is reported: a cut-off file or a
-bad chunk gives a warning, and only a hunt that could read no event at all is an error.
-
-## Hunt in a database
-
-Without `--logs`, `hunt` connects to the database in the `SIGMA2SQL_DSN` environment
-variable and runs the rules there:
+**Turn rules into SQL.** Convert rules for your own table and schema, ready to schedule or put
+in a view. Correlations such as "three failed logons in five minutes" become SQL too.
 
 ```bash
-export SIGMA2SQL_DSN='postgresql://reader@db.example:5432/logs'   # or clickhouse://, sqlite:, duckdb:
-sigma2sql hunt sigma/rules -t events --json-column event --since 7d
+sigma2sql convert sigma/rules -d postgres -t security.events --json-column event -p ecs-winlogbeat
 ```
 
-The connection refuses writes and each query on a server has a time limit, but a database
-user with only `SELECT` is still the right setup. A ClickHouse user restricted with
-`readonly = 1` works too, without that time limit. Every rule is at least one query, so mind
-the cost on large tables. See [Hunt in a database](docs/database.md).
-
-## See which rules can match
-
-A rule that needs a field your logs do not have never fires, and nothing tells you. `coverage`
-reads a sample of your events and sorts your rules by whether they can match at all, then
-lists the missing fields that cost the most rules:
-
-```bash
-sigma2sql coverage sigma/rules --logs 'logs/*.evtx'
-```
-
-See [Rule coverage](https://brkozer.github.io/sigma2sql/coverage/).
-
-## Use it from a page
-
-`sigma2sql serve sigma/rules` opens a page on this machine: choose the rules and the logs, see
-which rules can match, map the missing fields, run the rules and read the report. See
-[Local interface](https://brkozer.github.io/sigma2sql/serve/).
-
-<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/serve-coverage.png" alt="The coverage page of sigma2sql serve: 709 of 2,427 rules can never match, a bar of all rules, and the missing fields that cost the most rules with a box to enter each one's name in the logs" width="100%"></p>
-
-## Convert rules
-
-```console
-$ sigma2sql convert examples/rules/office_spawns_shell.yml -d postgres --json-column data
--- Office application starting a shell (8a7f3e91-2c44-4b8e-b0f6-3e5d9c1a7b02)
-SELECT * FROM "events" WHERE (("data"->>'ParentImage' ILIKE '%\\winword.exe' ESCAPE '\' OR ...)
-  AND ("data"->>'Image' ILIKE '%\\cmd.exe' ESCAPE '\' OR ...));
-```
-
-A whole directory works the same way, e.g.
-`sigma2sql convert sigma/rules -d postgres -t security.events --json-column event --profile ecs-winlogbeat`.
-Without `--json-column` each Sigma field is a column. Unsupported rules are listed on stderr
-with the reason, and the command exits non-zero.
-
-| Option | Meaning |
-| --- | --- |
-| `-d, --dialect` | `sqlite` (default), `postgres`, `duckdb` or `clickhouse` |
-| `-t, --table` | table name, `schema.table` allowed (default `events`) |
-| `--json-column` | read fields from this JSON / JSONB column |
-| `--keyword-column` | column searched by keyword rules (in JSON mode the whole document) |
-| `-p, --profile` | built-in profile or a YAML file (see below) |
-| `-m, --mapping` | YAML map from Sigma field to your column or key, applied over the profile |
-| `--placeholders` | YAML file with the values of `%name%` placeholders (see below) |
-| `--nested` | dotted names are paths into nested JSON |
-| `--timestamp-field`, `--timestamp-format` | event time for correlations (`iso`, `epoch_s`, `epoch_ms`) |
-
-## Correlations
-
-Sigma correlation rules and the older `| count() by ... > N` syntax both become SQL. With a
-`timespan`, each event closes a window over the events of the same group before it; the
-window's events are found with a self-join, which works the same on every database and
-allows distinct counts:
-
-```yaml
-title: Brute force against one account
-correlation:
-  type: event_count          # also value_count, value_sum, value_avg, value_median,
-                             # value_percentile, temporal, temporal_ordered
-  rules: [failed_logon]
-  group-by: [TargetUserName]
-  timespan: 5m
-  condition: {gte: 3}
-```
-
-Each result row holds the group values, the window's start and end (`first_seen` and
-`last_seen` without a `timespan`) and the counted value. Rules referenced by a correlation are
-not reported on their own unless it sets `generate: true`. `temporal_ordered` gives a row for
-every start time of a complete sequence in a group, so a repeated attack is reported each time.
-Events with the same timestamp count as in order, because many logs only have whole seconds,
-except that a rule that comes back needs a later event than its previous step.
-
-## Placeholders
-
-Rules with the `expand` modifier leave a value for you to fill in, such as your domain
-controllers. Give the values in a YAML file; a list means any of them:
-
-```yaml
-dc_ip_addresses: [10.0.0.10, 10.0.0.11]
-Workstations: "WS-*"
-```
-
-```bash
-sigma2sql convert rules/ --placeholders values.yml
-```
-
-A rule with a placeholder you did not provide is skipped and named on stderr, rather than
-converted into something that never matches or always does.
-
-## Filters
-
-[Sigma filters](https://sigmahq.io/docs/meta/filters.html) keep your exceptions out of the
-rules, so rules can be updated without losing them. Pass filter files along with the rules;
-`hunt` and `convert` apply them, and a filter that reaches no rule gives a warning:
-
-```yaml
-title: Not on build servers
-logsource: {product: windows, category: process_creation}
-filter:
-  rules: [5f4b9d6e-5a3f-4c8c-9d1e-2b7a8c6e1f30]    # ids or names, or `any`
-  build: {Computer|startswith: build-}
-  condition: not build
-```
-
-```bash
-sigma2sql hunt rules/ filters/ --logs 'logs/*.evtx'
-```
-
-`check` and `test` load one rule file at a time, so filters in other files do not apply. A
-filter in the same file as the rule does.
-
-## Profiles
-
-A profile describes where your events keep Sigma's fields and which events each log source
-covers. `sigma2sql profiles` lists the built-in ones:
-
-| Profile | For |
-| --- | --- |
-| `sysmon` | Sysmon events with their own field names; each category limited to its event ID |
-| `evtx` | EVTX exported to JSON by evtx_dump or python-evtx (`Event.System`, `Event.EventData`) |
-| `ecs-winlogbeat` | Windows events shipped by Winlogbeat in Elastic Common Schema |
-| `ocsf` | OCSF 1.x events, time in epoch milliseconds |
-
-Your own profile is a small YAML file:
-
-```yaml
-nested: true
-timestamp: "@timestamp"
-product: windows                                # optional: `hunt` runs only these rules
-default_field: "winlog.event_data.{field}"      # fallback for unmapped fields
-fields:
-  Image: process.executable
-  EventID: [event.code, winlog.event_id]         # first one present wins
-logsources:
-  - match: {product: windows, category: process_creation}
-    table: process_events                        # optional: route to a table
-    where: {event.code: "1"}                     # optional: extra condition
-```
-
-Without a profile, rules are not limited by log source: a network rule can then match a
-process event that happens to have the same field values. The built-in profiles cover the
-common Windows sources; for other data, add `logsources` entries.
-
-## Test rules
-
-Put example events next to a rule, one JSON object per line:
-
-```
-rules/office_spawns_shell.yml
-rules/office_spawns_shell.match.jsonl     # every event must match
-rules/office_spawns_shell.nomatch.jsonl   # no event may match
-```
-
-```console
-$ sigma2sql check examples/rules --require-tests
-ok   examples/rules/brute_force.yml
-ok   examples/rules/encoded_powershell.yml
-ok   examples/rules/office_spawns_shell.yml
-ok   examples/rules/rdp_from_outside.yml
-4 passed, 0 failed, 0 without tests
-```
-
-A failure names the rule, the file and the event's position in it, e.g. after adding an
-Outlook-spawned `cmd.exe` to the match file of a rule that only watches Word, Excel and
-PowerPoint:
-
-```console
-FAIL rules/office_spawns_shell.yml: Office application starting a shell: missed office_spawns_shell.match.jsonl event(s) 1
-```
-
-`check` also loads rules without test files, so a rule that cannot be loaded or converted, or
-an invalid regular expression, fails the run. A rule path that does not exist or holds no rule
-files exits with code 2, also next to a good path.
-
-The same check as a GitHub Action:
+**Test rules before they ship.** Put example events next to each rule and let CI check that
+it still fires on what it should, and only on that.
 
 ```yaml
 - uses: brkozer/sigma2sql@v0.5.2
   with:
     path: rules
-    profile: sysmon          # optional
-    require-tests: "true"    # optional
-    sarif: rules.sarif       # optional, for github/codeql-action/upload-sarif
 ```
 
-`sigma2sql test RULE EVENTS.jsonl` prints the events (or correlation results) a single rule
-produces.
+**Or do all of it from a page.** `sigma2sql serve` opens a page on your own machine: choose the
+logs, see the coverage, map the fields your logs call something else, run the rules and read
+the report.
 
-## Supported Sigma features
+## Why you can trust the results
 
-| Feature | SQLite | PostgreSQL | DuckDB | ClickHouse |
-| --- | --- | --- | --- | --- |
-| maps, lists, keywords (with `all`, `re` and string modifiers) | ✓ | ✓ | ✓ | ✓ |
-| `and`, `or`, `not`, `1 of x*`, `all of x*`, `them`, condition lists | ✓ | ✓ | ✓ | ✓ |
-| wildcards and escapes, `contains`, `startswith`, `endswith`, `all`, `cased`, `windash`, `neq` | ✓ | ✓ | ✓ | ✓ |
-| `base64`, `base64offset`, `utf16`, `utf16le`, `utf16be`, `wide` | ✓ | ✓ | ✓ | ✓ |
-| `re` with `i`, `m`, `s` | `REGEXP` ¹ | `~` ² | `regexp_matches` ³ | `match` ³ |
-| `cidr` (IPv4 and IPv6, any notation) | `cidr_match()` ¹ | `inet <<=` | `cidr_match()` ¹ | `isIPAddressInRange` |
-| `lt`, `lte`, `gt`, `gte`, `exists`, `fieldref`, `null` | ✓ | ✓ | ✓ | ✓ ⁴ |
-| `minute`, `hour`, `day`, `week`, `month`, `year` (UTC, ISO weeks) | ✓ | ✓ | ✓ | ✓ |
-| `expand` placeholders, filters | ✓ | ✓ | ✓ | ✓ |
-| correlations, `count()` aggregations | ✓ ¹ | ✓ | ✓ | ✓ ⁵ |
-| `temporal` with a boolean condition | – | – | – | – |
+- **All of SigmaHQ runs.** The 3,807 rules in its five rule folders convert and execute on
+  SQLite, DuckDB and ClickHouse, and 3,804 on PostgreSQL, checked against every database in CI
+  each week.
+- **Checked on real events.** All 477 of SigmaHQ's regression samples, real Windows events
+  with a known result, match as expected on SQLite, DuckDB, ClickHouse and straight from the
+  `.evtx` files.
+- **Same answers as the reference.** On those events sigma2sql agrees with pySigma on 3,076 of
+  3,078 rules. The two differences are IPv6 addresses pySigma's text matching misses.
+- **A database gives the same matches as the files.** On SQLite, DuckDB and ClickHouse the
+  results are identical rule for rule; PostgreSQL leaves out the 2 rules it cannot run.
 
-¹ Not built into the database. `hunt`, `test` and `check` register them; when you run the SQL
-elsewhere, register `regexp(pattern, value)`, `cidr_match(value, network)` and, for
-percentiles, the aggregate `sigma_percentile(value, fraction)` yourself
-(`sigma2sql.runner.connect()` returns a SQLite connection with all three).<br>
-² PostgreSQL rejects repetition counts above 255; those three rules are reported as
-unsupported rather than silently changed. Without `s` or `m`, `.` still matches a newline
-there. Values such as `-` in an address or number field are skipped with `pg_input_is_valid`,
-so `cidr`, comparisons and correlations need PostgreSQL 16 or newer. `\b` and `\B` in a
-pattern are written as PostgreSQL's `\y` and `\Y`.<br>
-³ RE2: no lookaround or backreferences; such rules are reported as unsupported.<br>
-⁴ Without `--json-column`, a missing value is only NULL in `Nullable` columns.<br>
-⁵ Tested on ClickHouse 25.8. Correlations with `group-by` need `IS NOT DISTINCT FROM` in
-`JOIN ON`. One SigmaHQ rule, a list of driver hashes, is larger than the default
-`max_query_size` of 256 KiB and needs that setting raised.
-`hunt` in a database raises it, except for a user restricted with `readonly = 1`.
+[How it is checked](https://brkozer.github.io/sigma2sql/correctness/) has the method.
 
-Matching is case-insensitive by default (ASCII in SQLite, as its `LIKE` and `NOCASE` are); a
-number in a rule matches a value in a JSON column whether it is stored as `4624` or `"4624"`,
-and `not` on a missing field is true, as Sigma intends.
-
-## How it works
-
-```mermaid
-flowchart LR
-    Y[rule files] --> L[loader<br/>rules, correlations,<br/>count aggregations]
-    L --> C[condition parser]
-    L --> D[search compiler<br/>modifiers, wildcards,<br/>base64, windash]
-    C --> E[match tree]
-    D --> E
-    P[profile<br/>fields, logsources,<br/>timestamp] --> R
-    E --> R[renderer<br/>SQLite · PostgreSQL · DuckDB · ClickHouse]
-    R --> Q[SQL]
-    R --> K[correlation SQL<br/>self-join windows]
-    Q --> H[hunt / test / check]
-    K --> H
-```
-
-## Library use
-
-```python
-from pathlib import Path
-
-from sigma2sql import Target, load_rule_file, to_query
-from sigma2sql.profile import apply_profile, load_profile
-
-rule = load_rule_file(Path("rule.yml"))
-target = apply_profile(
-    Target("postgres", "logs.windows", json_column="event"), load_profile("evtx")
-)
-print(to_query(rule, target))
-```
-
-## Development
+## Get started
 
 ```bash
-uv sync
-uv run pytest                                               # SQLite and DuckDB
-SIGMA2SQL_PG_DSN=postgresql://postgres:test@localhost/postgres uv run pytest   # + PostgreSQL
-SIGMA2SQL_CH_URL=http://localhost:8123/ uv run pytest                          # + ClickHouse
-uv run python scripts/check_sigmahq.py sigma/rules --dsn ... --clickhouse ... [--profile evtx]
-uv run python scripts/check_regression.py sigma --clickhouse ... --evtx
-uv run --with pysigma --with pysigma-backend-sqlite python scripts/diff_pysigma.py sigma
-uv run python scripts/demo_svg.py docs/demo.svg
+pip install "sigma2sql[duckdb,evtx]"     # add ,postgres to hunt in PostgreSQL
+git clone --depth 1 https://github.com/SigmaHQ/sigma
+sigma2sql hunt sigma/rules --logs 'logs/*.evtx'
 ```
 
-The behaviour tests in `tests/cases.py` and `tests/test_correlation.py` run unchanged on all
-four databases. The example rules and events in `examples/` were written for this project.
+`convert`, `test` and `check` need nothing beyond the base package. Python 3.12 or newer.
+
+<p align="center"><img src="https://raw.githubusercontent.com/brkozer/sigma2sql/main/docs/report.png" alt="The sigma2sql HTML report: matching rules by level and ATT&CK tactic, with one rule opened to show its events" width="100%"></p>
+
+## Documentation
+
+Everything is at **[brkozer.github.io/sigma2sql](https://brkozer.github.io/sigma2sql/)**:
+
+- [Quick start](https://brkozer.github.io/sigma2sql/quickstart/)
+- [Hunt through log files](https://brkozer.github.io/sigma2sql/hunt/) and
+  [in a database](https://brkozer.github.io/sigma2sql/database/)
+- [Rule coverage](https://brkozer.github.io/sigma2sql/coverage/) and the
+  [local interface](https://brkozer.github.io/sigma2sql/serve/)
+- [Convert rules](https://brkozer.github.io/sigma2sql/convert/),
+  [correlations](https://brkozer.github.io/sigma2sql/correlations/),
+  [profiles](https://brkozer.github.io/sigma2sql/profiles/),
+  [placeholders](https://brkozer.github.io/sigma2sql/placeholders/) and
+  [filters](https://brkozer.github.io/sigma2sql/filters/)
+- [Test rules and the GitHub Action](https://brkozer.github.io/sigma2sql/testing/)
+- [Supported Sigma features](https://brkozer.github.io/sigma2sql/features/), the
+  [command line](https://brkozer.github.io/sigma2sql/cli/) and
+  [library use](https://brkozer.github.io/sigma2sql/library/)
+- [How it works](https://brkozer.github.io/sigma2sql/how-it-works/), including development
 
 ## License
 
