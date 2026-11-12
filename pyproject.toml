@@ -52,7 +52,7 @@ dev = [
     "types-pyyaml>=6.0.12",
 ]
 # pinned exactly: zensical is pre-1.0
-docs = ["zensical==0.0.74"]
+docs = ["zensical==0.1.0"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
